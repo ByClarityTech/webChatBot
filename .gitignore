@@ -20,6 +20,12 @@ frontend/out/
 # Data & caches
 /data/uploads/
 /docling_cache/
+# Local runs use UPLOAD_DIR=./data/uploads and DOCLING_CACHE_DIR=./tmp/docling_cache,
+# relative to the service folder
+/worker/data/
+/worker/tmp/
+/backend/data/
+/backend/tmp/
 *.log
 
 # IDE

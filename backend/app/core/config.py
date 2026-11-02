@@ -1,13 +1,20 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_BACKEND_DIR = Path(__file__).resolve().parents[2]
+
+# Repo-root .env first, then an optional backend/.env (later files win; real environment
+# variables override both). Absolute paths, so it works whatever folder the app starts in.
+ENV_FILES = (_BACKEND_DIR.parent / ".env", _BACKEND_DIR / ".env")
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=ENV_FILES,
         env_file_encoding="utf-8",
         extra="ignore",
     )
