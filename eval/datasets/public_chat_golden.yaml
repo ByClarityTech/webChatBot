@@ -1,0 +1,9 @@
+cases:
+  - question: "What services do you offer?"
+    must_cite:
+      - services-overview.md
+  - question: "What file formats are supported?"
+    must_cite:
+      - faq.md
+  - question: "What is your refund policy for Mars colonization?"
+    expect_refusal: true
