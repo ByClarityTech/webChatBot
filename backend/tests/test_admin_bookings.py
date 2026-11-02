@@ -1,15 +1,15 @@
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
+from auth_helpers import signed_in, signed_out
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.api.routes.admin import bookings as admin_bookings
+from app.core.roles import UserType
 from app.db.models.booking import BookingRecord
-
-TEST_ADMIN_KEY = "test-admin-key-secret"
 
 
 @pytest.fixture
@@ -17,17 +17,6 @@ def admin_bookings_app():
     test_app = FastAPI()
     test_app.include_router(admin_bookings.router, prefix="/api/v1")
     return test_app
-
-
-@pytest.fixture
-def configured_admin_settings():
-    settings = MagicMock()
-    settings.admin_api_key = TEST_ADMIN_KEY
-    return settings
-
-
-def _auth_headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {TEST_ADMIN_KEY}"}
 
 
 def _sample_booking(*, status: str = "confirmed") -> BookingRecord:
@@ -47,10 +36,8 @@ def _sample_booking(*, status: str = "confirmed") -> BookingRecord:
 
 
 @pytest.mark.asyncio
-async def test_list_bookings_without_auth_returns_401(
-    admin_bookings_app, configured_admin_settings
-):
-    with patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings):
+async def test_list_bookings_without_auth_returns_401(admin_bookings_app):
+    with signed_out(admin_bookings_app):
         transport = ASGITransport(app=admin_bookings_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get("/api/v1/admin/bookings")
@@ -59,21 +46,18 @@ async def test_list_bookings_without_auth_returns_401(
 
 
 @pytest.mark.asyncio
-async def test_list_bookings_with_auth_returns_paginated_list(
-    admin_bookings_app, configured_admin_settings
-):
+async def test_list_bookings_with_auth_returns_paginated_list(admin_bookings_app):
     record = _sample_booking()
     mock_list = AsyncMock(return_value=([record], 1))
 
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_in(admin_bookings_app, UserType.admin),
         patch("app.api.routes.admin.bookings.list_bookings", mock_list),
     ):
         transport = ASGITransport(app=admin_bookings_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get(
                 "/api/v1/admin/bookings?offset=0&limit=10&status=confirmed",
-                headers=_auth_headers(),
             )
 
     assert response.status_code == 200
@@ -93,11 +77,11 @@ async def test_list_bookings_with_auth_returns_paginated_list(
 
 
 @pytest.mark.asyncio
-async def test_list_bookings_passes_date_filters(admin_bookings_app, configured_admin_settings):
+async def test_list_bookings_passes_date_filters(admin_bookings_app):
     mock_list = AsyncMock(return_value=([], 0))
 
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_in(admin_bookings_app, UserType.admin),
         patch("app.api.routes.admin.bookings.list_bookings", mock_list),
     ):
         transport = ASGITransport(app=admin_bookings_app)
@@ -105,7 +89,6 @@ async def test_list_bookings_passes_date_filters(admin_bookings_app, configured_
             response = await client.get(
                 "/api/v1/admin/bookings"
                 "?from=2030-07-01T00:00:00%2B00:00&to=2030-07-31T23:59:59%2B00:00",
-                headers=_auth_headers(),
             )
 
     assert response.status_code == 200
@@ -115,19 +98,18 @@ async def test_list_bookings_passes_date_filters(admin_bookings_app, configured_
 
 
 @pytest.mark.asyncio
-async def test_get_booking_detail(admin_bookings_app, configured_admin_settings):
+async def test_get_booking_detail(admin_bookings_app):
     record = _sample_booking()
     mock_fetch = AsyncMock(return_value=record)
 
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_in(admin_bookings_app, UserType.admin),
         patch("app.api.routes.admin.bookings.fetch_booking", mock_fetch),
     ):
         transport = ASGITransport(app=admin_bookings_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get(
                 f"/api/v1/admin/bookings/{record.id}",
-                headers=_auth_headers(),
             )
 
     assert response.status_code == 200
@@ -139,11 +121,11 @@ async def test_get_booking_detail(admin_bookings_app, configured_admin_settings)
 
 
 @pytest.mark.asyncio
-async def test_get_booking_detail_not_found(admin_bookings_app, configured_admin_settings):
+async def test_get_booking_detail_not_found(admin_bookings_app):
     from app.booking.service import BookingNotFoundError
 
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_in(admin_bookings_app, UserType.admin),
         patch(
             "app.api.routes.admin.bookings.fetch_booking",
             new_callable=AsyncMock,
@@ -154,26 +136,24 @@ async def test_get_booking_detail_not_found(admin_bookings_app, configured_admin
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get(
                 f"/api/v1/admin/bookings/{uuid4()}",
-                headers=_auth_headers(),
             )
 
     assert response.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_cancel_booking(admin_bookings_app, configured_admin_settings):
+async def test_cancel_booking(admin_bookings_app):
     record = _sample_booking(status="cancelled")
     mock_cancel = AsyncMock(return_value=record)
 
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_in(admin_bookings_app, UserType.admin),
         patch("app.api.routes.admin.bookings.cancel_booking", mock_cancel),
     ):
         transport = ASGITransport(app=admin_bookings_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.patch(
                 f"/api/v1/admin/bookings/{record.id}",
-                headers=_auth_headers(),
             )
 
     assert response.status_code == 200
@@ -183,10 +163,8 @@ async def test_cancel_booking(admin_bookings_app, configured_admin_settings):
 
 
 @pytest.mark.asyncio
-async def test_cancel_booking_without_auth_returns_401(
-    admin_bookings_app, configured_admin_settings
-):
-    with patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings):
+async def test_cancel_booking_without_auth_returns_401(admin_bookings_app):
+    with signed_out(admin_bookings_app):
         transport = ASGITransport(app=admin_bookings_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.patch(f"/api/v1/admin/bookings/{uuid4()}")

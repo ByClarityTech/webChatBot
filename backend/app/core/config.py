@@ -69,9 +69,15 @@ class Settings(BaseSettings):
     business_days: str = "1,2,3,4,5"
     booking_rate_limit_per_hour: int = 10
 
-    admin_api_key: str = ""
     admin_frontend_url: str = "http://localhost:3000"
-    admin_login_rate_limit_per_hour: int = 20
+
+    # Admin app login (email + password, server-side sessions in an httpOnly cookie)
+    session_cookie_name: str = "webchatbot_session"
+    session_ttl_hours: int = 8
+    # None = Secure only when APP_ENV=production (local dev runs on plain http://localhost)
+    session_cookie_secure: bool | None = None
+    login_max_failed_attempts: int = 5
+    login_failure_window_minutes: int = 15
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
@@ -89,6 +95,12 @@ class Settings(BaseSettings):
     @property
     def langsmith_enabled(self) -> bool:
         return self.langsmith_tracing and bool(self.langsmith_api_key)
+
+    @property
+    def session_cookie_secure_effective(self) -> bool:
+        if self.session_cookie_secure is not None:
+            return self.session_cookie_secure
+        return self.app_env == "production"
 
 
 @lru_cache

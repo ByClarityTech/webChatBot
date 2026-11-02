@@ -1,13 +1,13 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from auth_helpers import signed_in, signed_out
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.api.routes.admin import dashboard as admin_dashboard
+from app.core.roles import UserType
 from app.schemas.admin_dashboard import AdminDashboardSummaryResponse
-
-TEST_ADMIN_KEY = "test-admin-key-secret"
 
 
 @pytest.fixture
@@ -15,17 +15,6 @@ def dashboard_app():
     test_app = FastAPI()
     test_app.include_router(admin_dashboard.router, prefix="/api/v1")
     return test_app
-
-
-@pytest.fixture
-def configured_admin_settings():
-    settings = MagicMock()
-    settings.admin_api_key = TEST_ADMIN_KEY
-    return settings
-
-
-def _auth_headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {TEST_ADMIN_KEY}"}
 
 
 SAMPLE_SUMMARY = AdminDashboardSummaryResponse(
@@ -37,9 +26,9 @@ SAMPLE_SUMMARY = AdminDashboardSummaryResponse(
 
 @pytest.mark.asyncio
 async def test_dashboard_summary_without_auth_returns_401(
-    dashboard_app, configured_admin_settings
+    dashboard_app
 ):
-    with patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings):
+    with signed_out(dashboard_app):
         transport = ASGITransport(app=dashboard_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get("/api/v1/admin/dashboard/summary")
@@ -49,10 +38,10 @@ async def test_dashboard_summary_without_auth_returns_401(
 
 @pytest.mark.asyncio
 async def test_dashboard_summary_returns_aggregated_counts(
-    dashboard_app, configured_admin_settings
+    dashboard_app
 ):
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_in(dashboard_app, UserType.admin),
         patch(
             "app.api.routes.admin.dashboard.get_dashboard_summary",
             new_callable=AsyncMock,
@@ -63,7 +52,6 @@ async def test_dashboard_summary_returns_aggregated_counts(
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get(
                 "/api/v1/admin/dashboard/summary",
-                headers=_auth_headers(),
             )
 
     assert response.status_code == 200

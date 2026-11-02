@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, File, Request, UploadFile
 
-from app.api.deps.admin_auth import require_admin_auth
+from app.api.deps.auth import require_access
+from app.core.permissions import Area
 from app.schemas.documents import (
     AdminDeleteDocumentResponse,
     AdminIngestResponse,
@@ -8,12 +9,12 @@ from app.schemas.documents import (
     AdminReindexResponse,
 )
 from app.services import document_worker
-from app.services.admin_audit import client_ip_from_request, log_admin_action
+from app.services.admin_audit import log_admin_action
 
 router = APIRouter(
     prefix="/admin/documents",
     tags=["admin-documents"],
-    dependencies=[Depends(require_admin_auth)],
+    dependencies=[Depends(require_access(Area.documents))],
 )
 
 
@@ -32,7 +33,7 @@ async def upload_document(
         "document.upload",
         resource_type="document",
         resource_id=result.source_id,
-        client_ip=client_ip_from_request(request),
+        request=request,
     )
     return result
 
@@ -47,7 +48,7 @@ async def delete_document(
         "document.delete",
         resource_type="document",
         resource_id=source_id,
-        client_ip=client_ip_from_request(request),
+        request=request,
     )
     return result
 
@@ -62,6 +63,6 @@ async def reindex_document(
         "document.reindex",
         resource_type="document",
         resource_id=source_id,
-        client_ip=client_ip_from_request(request),
+        request=request,
     )
     return result

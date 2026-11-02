@@ -1,33 +1,67 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { adminLogin, setAdminApiKey } from "@/lib/admin-api";
+import { adminLogin, ApiError, getCurrentUser } from "@/lib/admin-api";
+
+function loginErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 429) {
+      const minutes = err.retryAfterSeconds ? Math.ceil(err.retryAfterSeconds / 60) : null;
+      return minutes
+        ? `Too many failed attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`
+        : "Too many failed attempts. Try again later.";
+    }
+    if (err.status === 401) {
+      return "Invalid email or password.";
+    }
+    return err.message;
+  }
+  return "Could not reach the server. Check that the API is running.";
+}
 
 export default function AdminLoginPage() {
   const router = useRouter();
-  const [apiKey, setApiKey] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("expired")) {
+      setNotice("Your session ended. Please sign in again.");
+    }
+    // Already signed in: go straight to the dashboard.
+    getCurrentUser()
+      .then((user) => {
+        if (user) {
+          router.replace("/admin");
+        }
+      })
+      .catch(() => {
+        // API unreachable; the form shows the error on submit.
+      });
+  }, [router]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const trimmed = apiKey.trim();
-    if (!trimmed) {
-      setError("Enter your admin API key.");
+    if (!email.trim() || !password) {
+      setError("Enter your email and password.");
       return;
     }
 
     setLoading(true);
     setError(null);
+    setNotice(null);
 
     try {
-      await adminLogin(trimmed);
-      setAdminApiKey(trimmed);
+      await adminLogin(email.trim(), password);
       router.replace("/admin");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed.");
+      setError(loginErrorMessage(err));
+      setPassword("");
     } finally {
       setLoading(false);
     }
@@ -37,32 +71,54 @@ export default function AdminLoginPage() {
     <main className="flex min-h-screen items-center justify-center px-4">
       <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
         <h1 className="text-xl font-semibold text-slate-900">Admin sign in</h1>
-        <p className="mt-2 text-sm text-slate-600">
-          Enter the deployment <code className="text-xs">ADMIN_API_KEY</code> to access the
-          dashboard.
-        </p>
+        <p className="mt-2 text-sm text-slate-600">Sign in with your work email and password.</p>
 
-        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+        {notice && (
+          <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            {notice}
+          </p>
+        )}
+
+        <form onSubmit={handleSubmit} className="mt-6 space-y-4" noValidate>
           <div>
-            <label htmlFor="api-key" className="mb-1.5 block text-sm font-medium text-slate-700">
-              API key
+            <label htmlFor="email" className="mb-1.5 block text-sm font-medium text-slate-700">
+              Email
             </label>
             <input
-              id="api-key"
-              type="password"
-              value={apiKey}
-              onChange={(event) => setApiKey(event.target.value)}
-              autoComplete="off"
+              id="email"
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              autoComplete="username"
               className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none ring-slate-400 focus:ring-2"
               disabled={loading}
             />
           </div>
 
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          <div>
+            <label htmlFor="password" className="mb-1.5 block text-sm font-medium text-slate-700">
+              Password
+            </label>
+            <input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete="current-password"
+              className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none ring-slate-400 focus:ring-2"
+              disabled={loading}
+            />
+          </div>
+
+          {error && (
+            <p className="text-sm text-red-600" role="alert">
+              {error}
+            </p>
+          )}
 
           <button
             type="submit"
-            disabled={loading || !apiKey.trim()}
+            disabled={loading || !email.trim() || !password}
             className="w-full rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
             {loading ? "Signing in..." : "Sign in"}

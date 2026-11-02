@@ -27,7 +27,9 @@ def _base_state() -> PublicAssistantState:
 
 @patch("app.agents.public.nodes.booking_intent.get_settings")
 def test_booking_intent_node_when_disabled_returns_no_action(mock_get_settings):
-    mock_get_settings.return_value = MagicMock(booking_enabled=False)
+    # langsmith_enabled must be set explicitly: a bare MagicMock attribute is truthy and the
+    # node would try to write a MagicMock into os.environ.
+    mock_get_settings.return_value = MagicMock(booking_enabled=False, langsmith_enabled=False)
 
     result = booking_intent_node(_base_state())
 
@@ -37,7 +39,7 @@ def test_booking_intent_node_when_disabled_returns_no_action(mock_get_settings):
 
 @patch("app.agents.public.nodes.booking_intent.get_settings")
 def test_booking_intent_node_when_enabled_returns_open_form_action(mock_get_settings):
-    mock_get_settings.return_value = MagicMock(booking_enabled=True)
+    mock_get_settings.return_value = MagicMock(booking_enabled=True, langsmith_enabled=False)
 
     result = booking_intent_node(_base_state())
 

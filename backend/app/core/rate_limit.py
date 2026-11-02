@@ -33,7 +33,6 @@ class InMemoryRateLimiter:
 
 
 _booking_limiter: InMemoryRateLimiter | None = None
-_admin_login_limiter: InMemoryRateLimiter | None = None
 
 
 def _get_booking_limiter() -> InMemoryRateLimiter:
@@ -44,26 +43,10 @@ def _get_booking_limiter() -> InMemoryRateLimiter:
     return _booking_limiter
 
 
-def _get_admin_login_limiter() -> InMemoryRateLimiter:
-    global _admin_login_limiter
-    if _admin_login_limiter is None:
-        settings = get_settings()
-        _admin_login_limiter = InMemoryRateLimiter(
-            limit=settings.admin_login_rate_limit_per_hour,
-        )
-    return _admin_login_limiter
-
-
 def reset_booking_rate_limiter() -> None:
     """Clear limiter state — for tests only."""
     global _booking_limiter
     _booking_limiter = None
-
-
-def reset_admin_login_rate_limiter() -> None:
-    """Clear limiter state — for tests only."""
-    global _admin_login_limiter
-    _admin_login_limiter = None
 
 
 def booking_rate_limit_key(client_ip: str, thread_id: str | None) -> str:
@@ -77,5 +60,63 @@ def check_booking_rate_limit(client_ip: str, thread_id: str | None) -> bool:
     return _get_booking_limiter().allow(key)
 
 
-def check_admin_login_rate_limit(client_ip: str) -> bool:
-    return _get_admin_login_limiter().allow(client_ip)
+class FailedAttemptLimiter:
+    """Counts failures only; a success clears the key. Single-process MVP (no Redis)."""
+
+    def __init__(self, *, max_failures: int, window_seconds: int) -> None:
+        self._max_failures = max_failures
+        self._window_seconds = window_seconds
+        self._failures: dict[str, list[float]] = {}
+        self._lock = Lock()
+
+    def _recent(self, key: str, now: float) -> list[float]:
+        cutoff = now - self._window_seconds
+        recent = [ts for ts in self._failures.get(key, []) if ts > cutoff]
+        if recent:
+            self._failures[key] = recent
+        else:
+            self._failures.pop(key, None)
+        return recent
+
+    def retry_after(self, key: str) -> int | None:
+        """Seconds until the key may try again, or None if it is not locked."""
+        now = time.monotonic()
+        with self._lock:
+            recent = self._recent(key, now)
+            if len(recent) < self._max_failures:
+                return None
+            oldest_counted = recent[-self._max_failures]
+            return max(1, int(oldest_counted + self._window_seconds - now) + 1)
+
+    def record_failure(self, key: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            self._failures[key] = [*self._recent(key, now), now]
+
+    def clear(self, key: str) -> None:
+        with self._lock:
+            self._failures.pop(key, None)
+
+
+_login_failure_limiter: FailedAttemptLimiter | None = None
+
+
+def get_login_failure_limiter() -> FailedAttemptLimiter:
+    global _login_failure_limiter
+    if _login_failure_limiter is None:
+        settings = get_settings()
+        _login_failure_limiter = FailedAttemptLimiter(
+            max_failures=settings.login_max_failed_attempts,
+            window_seconds=settings.login_failure_window_minutes * 60,
+        )
+    return _login_failure_limiter
+
+
+def reset_login_failure_limiter() -> None:
+    """Clear limiter state — for tests only."""
+    global _login_failure_limiter
+    _login_failure_limiter = None
+
+
+def login_failure_key(email: str, client_ip: str) -> str:
+    return f"{email.strip().lower()}|{client_ip}"

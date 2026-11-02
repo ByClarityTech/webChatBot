@@ -1,11 +1,13 @@
 from io import BytesIO
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from auth_helpers import signed_in, signed_out
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.api.routes.admin import documents as admin_documents
+from app.core.roles import UserType
 from app.schemas.documents import (
     AdminDeleteDocumentResponse,
     AdminDocumentSummary,
@@ -14,7 +16,6 @@ from app.schemas.documents import (
     AdminReindexResponse,
 )
 
-TEST_ADMIN_KEY = "test-admin-key-secret"
 SAMPLE_SOURCE_ID = "abc123hash"
 
 
@@ -25,20 +26,9 @@ def admin_documents_app():
     return test_app
 
 
-@pytest.fixture
-def configured_admin_settings():
-    settings = MagicMock()
-    settings.admin_api_key = TEST_ADMIN_KEY
-    return settings
-
-
-def _auth_headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {TEST_ADMIN_KEY}"}
-
-
 @pytest.mark.asyncio
-async def test_list_documents_without_auth_returns_401(admin_documents_app, configured_admin_settings):
-    with patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings):
+async def test_list_documents_without_auth_returns_401(admin_documents_app):
+    with signed_out(admin_documents_app):
         transport = ASGITransport(app=admin_documents_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get("/api/v1/admin/documents")
@@ -47,7 +37,7 @@ async def test_list_documents_without_auth_returns_401(admin_documents_app, conf
 
 
 @pytest.mark.asyncio
-async def test_list_documents_with_auth_returns_documents(admin_documents_app, configured_admin_settings):
+async def test_list_documents_with_auth_returns_documents(admin_documents_app):
     mock_list = AsyncMock(
         return_value=AdminListDocumentsResponse(
             documents=[
@@ -63,12 +53,12 @@ async def test_list_documents_with_auth_returns_documents(admin_documents_app, c
     )
 
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_in(admin_documents_app, UserType.admin),
         patch("app.api.routes.admin.documents.document_worker.list_admin_documents", mock_list),
     ):
         transport = ASGITransport(app=admin_documents_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get("/api/v1/admin/documents", headers=_auth_headers())
+            response = await client.get("/api/v1/admin/documents")
 
     assert response.status_code == 200
     payload = response.json()
@@ -79,7 +69,7 @@ async def test_list_documents_with_auth_returns_documents(admin_documents_app, c
 
 
 @pytest.mark.asyncio
-async def test_upload_document_calls_ingest(admin_documents_app, configured_admin_settings):
+async def test_upload_document_calls_ingest(admin_documents_app):
     mock_ingest = AsyncMock(
         return_value=AdminIngestResponse(
             status="indexed",
@@ -90,14 +80,13 @@ async def test_upload_document_calls_ingest(admin_documents_app, configured_admi
     )
 
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_in(admin_documents_app, UserType.admin),
         patch("app.api.routes.admin.documents.document_worker.admin_ingest_upload", mock_ingest),
     ):
         transport = ASGITransport(app=admin_documents_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post(
                 "/api/v1/admin/documents/upload",
-                headers=_auth_headers(),
                 files={"file": ("faq.md", b"# FAQ", "text/markdown")},
             )
 
@@ -107,7 +96,7 @@ async def test_upload_document_calls_ingest(admin_documents_app, configured_admi
 
 
 @pytest.mark.asyncio
-async def test_delete_document_calls_remove(admin_documents_app, configured_admin_settings):
+async def test_delete_document_calls_remove(admin_documents_app):
     mock_delete = AsyncMock(
         return_value=AdminDeleteDocumentResponse(
             status="deleted",
@@ -118,7 +107,7 @@ async def test_delete_document_calls_remove(admin_documents_app, configured_admi
     )
 
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_in(admin_documents_app, UserType.admin),
         patch(
             "app.api.routes.admin.documents.document_worker.delete_document_by_source_id",
             mock_delete,
@@ -128,7 +117,6 @@ async def test_delete_document_calls_remove(admin_documents_app, configured_admi
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.delete(
                 f"/api/v1/admin/documents/{SAMPLE_SOURCE_ID}",
-                headers=_auth_headers(),
             )
 
     assert response.status_code == 200
@@ -137,7 +125,7 @@ async def test_delete_document_calls_remove(admin_documents_app, configured_admi
 
 
 @pytest.mark.asyncio
-async def test_reindex_document_calls_reindex(admin_documents_app, configured_admin_settings):
+async def test_reindex_document_calls_reindex(admin_documents_app):
     mock_reindex = AsyncMock(
         return_value=AdminReindexResponse(
             status="indexed",
@@ -148,7 +136,7 @@ async def test_reindex_document_calls_reindex(admin_documents_app, configured_ad
     )
 
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_in(admin_documents_app, UserType.admin),
         patch(
             "app.api.routes.admin.documents.document_worker.reindex_document_by_source_id",
             mock_reindex,
@@ -158,7 +146,6 @@ async def test_reindex_document_calls_reindex(admin_documents_app, configured_ad
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post(
                 f"/api/v1/admin/documents/{SAMPLE_SOURCE_ID}/reindex",
-                headers=_auth_headers(),
             )
 
     assert response.status_code == 200
@@ -167,8 +154,8 @@ async def test_reindex_document_calls_reindex(admin_documents_app, configured_ad
 
 
 @pytest.mark.asyncio
-async def test_upload_without_auth_returns_401(admin_documents_app, configured_admin_settings):
-    with patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings):
+async def test_upload_without_auth_returns_401(admin_documents_app):
+    with signed_out(admin_documents_app):
         transport = ASGITransport(app=admin_documents_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post(

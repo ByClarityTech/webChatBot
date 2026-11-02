@@ -3,13 +3,14 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 
-from app.api.deps.admin_auth import require_admin_auth
+from app.api.deps.auth import require_access
 from app.booking.schemas import (
     OAuthDisconnectResponse,
     OAuthStartResponse,
     OAuthStatusResponse,
 )
 from app.core.config import get_settings
+from app.core.permissions import Area
 from app.db.models.google_token import delete_google_tokens, get_google_token
 from app.integrations.google.oauth import (
     GoogleOAuthError,
@@ -18,7 +19,7 @@ from app.integrations.google.oauth import (
     is_google_calendar_connected,
     start_oauth_flow,
 )
-from app.services.admin_audit import client_ip_from_request, log_admin_action
+from app.services.admin_audit import log_admin_action
 
 router = APIRouter(prefix="/admin/google/oauth", tags=["admin-google-oauth"])
 
@@ -33,7 +34,7 @@ def _admin_calendar_redirect_url(*, connected: bool = False, error: str | None =
     return base
 
 
-@router.get("/start", response_model=None, dependencies=[Depends(require_admin_auth)])
+@router.get("/start", response_model=None, dependencies=[Depends(require_access(Area.calendar))])
 async def oauth_start(
     redirect: bool = Query(default=False, description="Redirect browser to Google consent"),
 ):
@@ -86,7 +87,11 @@ async def oauth_callback(
     )
 
 
-@router.get("/status", response_model=OAuthStatusResponse, dependencies=[Depends(require_admin_auth)])
+@router.get(
+    "/status",
+    response_model=OAuthStatusResponse,
+    dependencies=[Depends(require_access(Area.calendar))],
+)
 async def oauth_status():
     if not await is_google_calendar_connected():
         return OAuthStatusResponse(connected=False)
@@ -111,13 +116,13 @@ async def oauth_status():
 @router.delete(
     "/disconnect",
     response_model=OAuthDisconnectResponse,
-    dependencies=[Depends(require_admin_auth)],
+    dependencies=[Depends(require_access(Area.calendar))],
 )
 async def oauth_disconnect(request: Request):
     await delete_google_tokens()
     await log_admin_action(
         "calendar.disconnect",
         resource_type="calendar",
-        client_ip=client_ip_from_request(request),
+        request=request,
     )
     return OAuthDisconnectResponse()

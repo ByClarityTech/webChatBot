@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
+import { useAdminUser } from "@/components/admin/admin-session";
 import { adminFetch } from "@/lib/admin-api";
+import { canAccess } from "@/lib/admin-permissions";
 
 type DashboardSummary = {
   document_count: number;
@@ -55,6 +57,8 @@ function SummaryCard({
 }
 
 export default function AdminDashboardPage() {
+  const user = useAdminUser();
+  const canOpenDocuments = canAccess(user.user_type, "documents");
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -114,8 +118,8 @@ export default function AdminDashboardPage() {
           <SummaryCard
             title="Indexed documents"
             value={String(summary.document_count)}
-            href="/admin/documents"
-            hint="Open Documents to upload or remove files"
+            href={canOpenDocuments ? "/admin/documents" : undefined}
+            hint={canOpenDocuments ? "Open Documents to upload or remove files" : undefined}
           />
           <SummaryCard
             title="Bookings today"

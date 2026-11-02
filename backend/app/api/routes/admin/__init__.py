@@ -1,1 +1,1 @@
-# Admin routes — protected by require_admin_auth (Admin A0).
+# Admin routes — protected by require_access(Area...) (app/api/deps/auth.py).

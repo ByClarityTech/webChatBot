@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from app.api.deps.admin_auth import require_admin_auth
+from app.api.deps.auth import require_access
 from app.booking.schemas import (
     AdminBookingCancelResponse,
     AdminBookingDetailResponse,
@@ -17,13 +17,14 @@ from app.booking.service import (
     fetch_booking,
     list_bookings,
 )
+from app.core.permissions import Area
 from app.integrations.google.calendar_client import GoogleCalendarError
-from app.services.admin_audit import client_ip_from_request, log_admin_action
+from app.services.admin_audit import log_admin_action
 
 router = APIRouter(
     prefix="/admin/bookings",
     tags=["admin-bookings"],
-    dependencies=[Depends(require_admin_auth)],
+    dependencies=[Depends(require_access(Area.bookings_view))],
 )
 
 _MAX_PAGE_SIZE = 100
@@ -88,7 +89,11 @@ async def get_booking_detail(booking_id: UUID) -> AdminBookingDetailResponse:
     return _to_detail(record)
 
 
-@router.patch("/{booking_id}", response_model=AdminBookingCancelResponse)
+@router.patch(
+    "/{booking_id}",
+    response_model=AdminBookingCancelResponse,
+    dependencies=[Depends(require_access(Area.bookings_cancel))],
+)
 async def cancel_booking_admin(
     booking_id: UUID,
     request: Request,
@@ -110,6 +115,6 @@ async def cancel_booking_admin(
         "booking.cancel",
         resource_type="booking",
         resource_id=str(booking_id),
-        client_ip=client_ip_from_request(request),
+        request=request,
     )
     return AdminBookingCancelResponse(id=record.id, status=record.status)

@@ -1,9 +1,12 @@
-from fastapi import APIRouter, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 
+from app.api.deps.auth import require_access
+from app.core.permissions import Area
 from app.schemas.documents import DeleteDocumentResponse, IngestResponse, ListDocumentsResponse
 from app.services import document_worker
 
-router = APIRouter(tags=["documents"])
+# Older operator routes; same access as /admin/documents.
+router = APIRouter(tags=["documents"], dependencies=[Depends(require_access(Area.documents))])
 
 
 @router.get("/documents", response_model=ListDocumentsResponse)

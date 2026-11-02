@@ -1,9 +1,10 @@
 from datetime import date, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import pytest
+from auth_helpers import signed_in
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -16,6 +17,7 @@ from app.booking.availability import (
 )
 from app.booking.config import BusinessHoursConfig
 from app.booking.schemas import AvailabilityResponse, Slot
+from app.core.roles import UserType
 from app.integrations.google.schemas import BusyPeriod, FreeBusyResult
 
 
@@ -35,10 +37,8 @@ def booking_app():
 
 @pytest.mark.asyncio
 async def test_oauth_status_not_connected(oauth_app):
-    mock_settings = MagicMock()
-    mock_settings.admin_api_key = "test-admin-key"
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=mock_settings),
+        signed_in(oauth_app, UserType.support),
         patch(
             "app.api.routes.admin.google_oauth.is_google_calendar_connected",
             new_callable=AsyncMock,
@@ -47,10 +47,7 @@ async def test_oauth_status_not_connected(oauth_app):
     ):
         transport = ASGITransport(app=oauth_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get(
-                "/api/v1/admin/google/oauth/status",
-                headers={"Authorization": "Bearer test-admin-key"},
-            )
+            response = await client.get("/api/v1/admin/google/oauth/status")
 
     assert response.status_code == 200
     payload = response.json()

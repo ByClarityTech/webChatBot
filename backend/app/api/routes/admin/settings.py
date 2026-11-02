@@ -1,15 +1,16 @@
 from fastapi import APIRouter, Depends, Request
 
-from app.api.deps.admin_auth import require_admin_auth
+from app.api.deps.auth import require_access
 from app.booking.config import get_business_hours_config
+from app.core.permissions import Area
 from app.db.models.admin_settings import get_business_hours, upsert_business_hours
 from app.schemas.settings import BusinessHoursResponse, BusinessHoursUpdateRequest
-from app.services.admin_audit import client_ip_from_request, log_admin_action
+from app.services.admin_audit import log_admin_action
 
 router = APIRouter(
     prefix="/admin/settings",
     tags=["admin-settings"],
-    dependencies=[Depends(require_admin_auth)],
+    dependencies=[Depends(require_access(Area.business_hours))],
 )
 
 
@@ -55,6 +56,6 @@ async def update_business_hours_settings(
         "settings.business_hours_update",
         resource_type="settings",
         resource_id="business_hours",
-        client_ip=client_ip_from_request(request),
+        request=request,
     )
     return _to_response(config, updated_at=record.updated_at)

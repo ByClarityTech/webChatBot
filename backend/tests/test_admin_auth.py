@@ -1,55 +1,176 @@
-from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from auth_helpers import signed_in, signed_out
+from fastapi import APIRouter, FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from app.api.routes.admin import auth, google_oauth
-from app.core.rate_limit import reset_admin_login_rate_limiter
+from app.api.routes import documents as legacy_documents
+from app.api.routes.admin import (
+    audit_log,
+    bookings,
+    clients,
+    dashboard,
+    documents,
+    google_oauth,
+    settings,
+    users,
+)
+from app.core.csrf import CSRFOriginMiddleware
+from app.core.permissions import AREA_ACCESS, Area
+from app.core.roles import UserType
 from app.integrations.google.oauth import GoogleOAuthError
 
-TEST_ADMIN_KEY = "test-admin-key-secret"
+SA, ADMIN, SUPPORT = UserType.super_admin, UserType.admin, UserType.support
 
 
 @pytest.fixture
 def admin_app():
     test_app = FastAPI()
-    test_app.include_router(auth.router, prefix="/api/v1")
     test_app.include_router(google_oauth.router, prefix="/api/v1")
     return test_app
 
 
 @pytest.fixture
-def configured_admin_settings():
-    settings = MagicMock()
-    settings.admin_api_key = TEST_ADMIN_KEY
-    settings.admin_login_rate_limit_per_hour = 20
-    return settings
+def full_admin_app():
+    test_app = FastAPI()
+    for module in (
+        audit_log,
+        bookings,
+        clients,
+        dashboard,
+        documents,
+        google_oauth,
+        settings,
+        users,
+        legacy_documents,
+    ):
+        test_app.include_router(module.router, prefix="/api/v1")
+    return test_app
 
 
-@pytest.fixture(autouse=True)
-def _reset_admin_login_rate_limiter():
-    reset_admin_login_rate_limiter()
-    yield
-    reset_admin_login_rate_limiter()
+# ---------------------------------------------------------------- permission map
+
+
+def test_area_access_matches_role_decisions():
+    """Decision 7, plus dashboard for every role and legacy documents like admin documents."""
+    expected = {
+        Area.dashboard: {SA, ADMIN, SUPPORT},
+        Area.documents: {SA, ADMIN},
+        Area.calendar: {SA, ADMIN, SUPPORT},
+        Area.business_hours: {SA, ADMIN, SUPPORT},
+        Area.bookings_view: {SA, ADMIN, SUPPORT},
+        Area.bookings_cancel: {SA, ADMIN, SUPPORT},
+        Area.audit_log: {SA, ADMIN},
+        Area.users: {SA, ADMIN},
+        Area.clients: {SA},
+    }
+    assert set(AREA_ACCESS) == set(Area)
+    for area, roles in expected.items():
+        assert AREA_ACCESS[area] == {role.value for role in roles}, area
+
+
+ADMIN_ENDPOINTS = [
+    ("GET", "/api/v1/admin/dashboard/summary"),
+    ("GET", "/api/v1/admin/documents"),
+    ("DELETE", "/api/v1/admin/documents/abc"),
+    ("POST", "/api/v1/admin/documents/abc/reindex"),
+    ("GET", "/api/v1/admin/google/oauth/start"),
+    ("GET", "/api/v1/admin/google/oauth/status"),
+    ("DELETE", "/api/v1/admin/google/oauth/disconnect"),
+    ("GET", "/api/v1/admin/settings/business-hours"),
+    ("GET", "/api/v1/admin/bookings"),
+    ("GET", "/api/v1/admin/bookings/00000000-0000-0000-0000-000000000000"),
+    ("PATCH", "/api/v1/admin/bookings/00000000-0000-0000-0000-000000000000"),
+    ("GET", "/api/v1/admin/audit-log"),
+    ("GET", "/api/v1/documents"),
+    ("DELETE", "/api/v1/documents?all=true"),
+    ("GET", "/api/v1/admin/users"),
+    ("POST", "/api/v1/admin/users"),
+    ("GET", "/api/v1/admin/users/00000000-0000-0000-0000-000000000000"),
+    ("PATCH", "/api/v1/admin/users/00000000-0000-0000-0000-000000000000"),
+    ("GET", "/api/v1/admin/clients"),
+    ("POST", "/api/v1/admin/clients"),
+    ("GET", "/api/v1/admin/clients/00000000-0000-0000-0000-000000000000"),
+    ("PATCH", "/api/v1/admin/clients/00000000-0000-0000-0000-000000000000"),
+]
 
 
 @pytest.mark.asyncio
-async def test_oauth_status_without_bearer_returns_401(admin_app, configured_admin_settings):
-    with patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings):
+@pytest.mark.parametrize(("method", "path"), ADMIN_ENDPOINTS)
+async def test_every_admin_endpoint_requires_sign_in(full_admin_app, method, path):
+    with signed_out(full_admin_app):
+        transport = ASGITransport(app=full_admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.request(method, path)
+
+    assert response.status_code == 401
+
+
+SUPPORT_FORBIDDEN = [
+    ("GET", "/api/v1/admin/documents"),
+    ("DELETE", "/api/v1/admin/documents/abc"),
+    ("POST", "/api/v1/admin/documents/abc/reindex"),
+    ("GET", "/api/v1/admin/audit-log"),
+    ("GET", "/api/v1/documents"),
+    ("DELETE", "/api/v1/documents?all=true"),
+    ("GET", "/api/v1/admin/users"),
+    ("POST", "/api/v1/admin/users"),
+    ("GET", "/api/v1/admin/clients"),
+    ("POST", "/api/v1/admin/clients"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("method", "path"), SUPPORT_FORBIDDEN)
+async def test_support_user_gets_403_outside_their_areas(full_admin_app, method, path):
+    with signed_in(full_admin_app, SUPPORT):
+        transport = ASGITransport(app=full_admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.request(method, path)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "You do not have access to this area"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/api/v1/admin/clients"),
+        ("POST", "/api/v1/admin/clients"),
+        ("PATCH", "/api/v1/admin/clients/00000000-0000-0000-0000-000000000000"),
+    ],
+)
+async def test_admin_gets_403_on_clients(full_admin_app, method, path):
+    with signed_in(full_admin_app, ADMIN):
+        transport = ASGITransport(app=full_admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.request(method, path)
+
+    assert response.status_code == 403
+
+
+# ---------------------------------------------------------------- Google OAuth
+
+
+@pytest.mark.asyncio
+async def test_oauth_status_without_session_returns_401(admin_app):
+    with signed_out(admin_app):
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get("/api/v1/admin/google/oauth/status")
 
     assert response.status_code == 401
-    assert "admin api key" in response.json()["detail"].lower()
+    assert "not signed in" in response.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
-async def test_oauth_status_with_correct_key_returns_200(admin_app, configured_admin_settings):
+@pytest.mark.parametrize("user_type", [SA, ADMIN, SUPPORT])
+async def test_oauth_status_signed_in_returns_200(admin_app, user_type):
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_in(admin_app, user_type),
         patch(
             "app.api.routes.admin.google_oauth.is_google_calendar_connected",
             new_callable=AsyncMock,
@@ -58,90 +179,35 @@ async def test_oauth_status_with_correct_key_returns_200(admin_app, configured_a
     ):
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get(
-                "/api/v1/admin/google/oauth/status",
-                headers={"Authorization": f"Bearer {TEST_ADMIN_KEY}"},
-            )
+            response = await client.get("/api/v1/admin/google/oauth/status")
 
     assert response.status_code == 200
     assert response.json()["connected"] is False
 
 
 @pytest.mark.asyncio
-async def test_oauth_callback_without_auth_does_not_require_bearer(admin_app, configured_admin_settings):
+async def test_oauth_callback_without_auth_does_not_require_session(admin_app):
     mock_settings = MagicMock()
-    mock_settings.admin_api_key = TEST_ADMIN_KEY
     mock_settings.admin_frontend_url = "http://localhost:3000"
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_out(admin_app),
         patch("app.api.routes.admin.google_oauth.get_settings", return_value=mock_settings),
     ):
         transport = ASGITransport(app=admin_app)
-        async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test", follow_redirects=False
+        ) as client:
             response = await client.get("/api/v1/admin/google/oauth/callback")
 
-    assert response.status_code != 401
     assert response.status_code == 307
-    assert response.headers["location"] == "http://localhost:3000/admin/calendar?error=Missing%20authorization%20code"
+    assert (
+        response.headers["location"]
+        == "http://localhost:3000/admin/calendar?error=Missing%20authorization%20code"
+    )
 
 
 @pytest.mark.asyncio
-async def test_admin_login_valid_key_returns_ok(admin_app, configured_admin_settings):
-    with patch("app.api.routes.admin.auth.get_settings", return_value=configured_admin_settings):
-        transport = ASGITransport(app=admin_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.post(
-                "/api/v1/admin/auth/login",
-                json={"api_key": TEST_ADMIN_KEY},
-            )
-
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
-
-
-@pytest.mark.asyncio
-async def test_admin_login_invalid_key_returns_401(admin_app, configured_admin_settings):
-    with patch("app.api.routes.admin.auth.get_settings", return_value=configured_admin_settings):
-        transport = ASGITransport(app=admin_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.post(
-                "/api/v1/admin/auth/login",
-                json={"api_key": "wrong-key"},
-            )
-
-    assert response.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_admin_login_rate_limit_returns_429(admin_app):
-    settings = MagicMock()
-    settings.admin_api_key = TEST_ADMIN_KEY
-    settings.admin_login_rate_limit_per_hour = 2
-
-    with (
-        patch("app.api.routes.admin.auth.get_settings", return_value=settings),
-        patch("app.core.rate_limit.get_settings", return_value=settings),
-    ):
-        transport = ASGITransport(app=admin_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            for _ in range(2):
-                response = await client.post(
-                    "/api/v1/admin/auth/login",
-                    json={"api_key": "wrong-key"},
-                )
-                assert response.status_code == 401
-
-            response = await client.post(
-                "/api/v1/admin/auth/login",
-                json={"api_key": "wrong-key"},
-            )
-
-    assert response.status_code == 429
-    assert "too many" in response.json()["detail"].lower()
-
-
-@pytest.mark.asyncio
-async def test_oauth_status_refresh_failure_returns_refresh_error(admin_app, configured_admin_settings):
+async def test_oauth_status_refresh_failure_returns_refresh_error(admin_app):
     expired = datetime.now(timezone.utc) - timedelta(minutes=5)
     record = MagicMock()
     record.calendar_id = "primary"
@@ -149,7 +215,7 @@ async def test_oauth_status_refresh_failure_returns_refresh_error(admin_app, con
     record.connected_email = "admin@example.com"
 
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_in(admin_app, ADMIN),
         patch(
             "app.api.routes.admin.google_oauth.is_google_calendar_connected",
             new_callable=AsyncMock,
@@ -158,15 +224,14 @@ async def test_oauth_status_refresh_failure_returns_refresh_error(admin_app, con
         patch(
             "app.api.routes.admin.google_oauth.get_valid_credentials",
             new_callable=AsyncMock,
-            side_effect=GoogleOAuthError("Google Calendar refresh failed. Please reconnect your calendar."),
+            side_effect=GoogleOAuthError(
+                "Google Calendar refresh failed. Please reconnect your calendar."
+            ),
         ),
     ):
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get(
-                "/api/v1/admin/google/oauth/status",
-                headers={"Authorization": f"Bearer {TEST_ADMIN_KEY}"},
-            )
+            response = await client.get("/api/v1/admin/google/oauth/status")
 
     assert response.status_code == 200
     payload = response.json()
@@ -175,7 +240,7 @@ async def test_oauth_status_refresh_failure_returns_refresh_error(admin_app, con
 
 
 @pytest.mark.asyncio
-async def test_oauth_callback_success_redirects_to_frontend(admin_app, configured_admin_settings):
+async def test_oauth_callback_success_redirects_to_frontend(admin_app):
     mock_settings = MagicMock()
     mock_settings.admin_frontend_url = "http://localhost:3000"
     mock_record = MagicMock()
@@ -183,7 +248,6 @@ async def test_oauth_callback_success_redirects_to_frontend(admin_app, configure
     mock_record.connected_email = "admin@example.com"
 
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
         patch("app.api.routes.admin.google_oauth.get_settings", return_value=mock_settings),
         patch(
             "app.api.routes.admin.google_oauth.exchange_code_and_store",
@@ -192,26 +256,61 @@ async def test_oauth_callback_success_redirects_to_frontend(admin_app, configure
         ),
     ):
         transport = ASGITransport(app=admin_app)
-        async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
-            response = await client.get(
-                "/api/v1/admin/google/oauth/callback?code=abc&state=xyz",
-            )
+        async with AsyncClient(
+            transport=transport, base_url="http://test", follow_redirects=False
+        ) as client:
+            response = await client.get("/api/v1/admin/google/oauth/callback?code=abc&state=xyz")
 
     assert response.status_code == 307
     assert response.headers["location"] == "http://localhost:3000/admin/calendar?connected=1"
 
 
-@pytest.mark.asyncio
-async def test_oauth_status_unconfigured_admin_key_returns_503(admin_app):
-    settings = MagicMock()
-    settings.admin_api_key = ""
-    with patch("app.api.deps.admin_auth.get_settings", return_value=settings):
-        transport = ASGITransport(app=admin_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get(
-                "/api/v1/admin/google/oauth/status",
-                headers={"Authorization": "Bearer any-key"},
-            )
+# ---------------------------------------------------------------- CSRF
 
-    assert response.status_code == 503
-    assert "admin_api_key" in response.json()["detail"].lower()
+
+@pytest.fixture
+def csrf_app():
+    test_app = FastAPI()
+    router = APIRouter()
+
+    @router.post("/api/v1/admin/ping")
+    async def admin_ping():
+        return {"ok": True}
+
+    @router.get("/api/v1/admin/ping")
+    async def admin_ping_get():
+        return {"ok": True}
+
+    @router.post("/api/v1/chat-like")
+    async def public_ping():
+        return {"ok": True}
+
+    test_app.include_router(router)
+    test_app.add_middleware(
+        CSRFOriginMiddleware,
+        allowed_origins=["http://localhost:3000"],
+        protected_prefixes=("/api/v1/admin", "/api/v1/auth", "/api/v1/documents"),
+    )
+    return test_app
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path", "headers", "expected"),
+    [
+        ("POST", "/api/v1/admin/ping", {"origin": "https://evil.example"}, 403),
+        ("POST", "/api/v1/admin/ping", {"origin": "null"}, 403),
+        ("POST", "/api/v1/admin/ping", {"referer": "https://evil.example/page"}, 403),
+        ("POST", "/api/v1/admin/ping", {"origin": "http://localhost:3000"}, 200),
+        ("POST", "/api/v1/admin/ping", {"referer": "http://localhost:3000/admin"}, 200),
+        ("POST", "/api/v1/admin/ping", {}, 200),
+        ("GET", "/api/v1/admin/ping", {"origin": "https://evil.example"}, 200),
+        ("POST", "/api/v1/chat-like", {"origin": "https://evil.example"}, 200),
+    ],
+)
+async def test_csrf_origin_check(csrf_app, method, path, headers, expected):
+    transport = ASGITransport(app=csrf_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.request(method, path, headers=headers)
+
+    assert response.status_code == expected

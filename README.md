@@ -52,10 +52,14 @@ curl http://localhost:8000/api/v1/health
 
 ### 3. Seed sample documents
 
+Seeding signs in as a Super Admin or Admin (see **Admin dashboard** below to create the first user):
+
 ```bash
 pip install httpx
-python scripts/seed_public_docs.py
+python scripts/seed_public_docs.py --email you@example.com
 ```
+
+The password is read from `SEED_ADMIN_PASSWORD` or prompted for.
 
 ### 4. Chat via API
 
@@ -87,8 +91,16 @@ Open [http://localhost:3000](http://localhost:3000).
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/health` | Health check |
-| `GET` | `/api/v1/documents` | List indexed documents (legacy public) |
-| `POST` | `/api/v1/documents/ingest` | Upload and index a document (legacy public) |
+| `POST` | `/api/v1/auth/login` | Admin sign-in (email + password); sets the session cookie |
+| `POST` | `/api/v1/auth/logout` | Ends the session |
+| `GET` | `/api/v1/auth/me` | Signed-in user, user type and client |
+| `POST` | `/api/v1/auth/password` | Change your own password (current password required) |
+| `GET` / `POST` | `/api/v1/admin/clients` | List or create clients (Super Admin) |
+| `GET` / `PATCH` | `/api/v1/admin/clients/{client_id}` | View, rename, suspend or activate a client (Super Admin) |
+| `GET` / `POST` | `/api/v1/admin/users` | List or create users (Super Admin: any client; Admin: Support users in own client) |
+| `GET` / `PATCH` | `/api/v1/admin/users/{user_id}` | View, rename, deactivate or reset the password of a user |
+| `GET` | `/api/v1/documents` | List indexed documents (legacy; Super Admin or Admin) |
+| `POST` | `/api/v1/documents/ingest` | Upload and index a document (legacy; Super Admin or Admin) |
 | `DELETE` | `/api/v1/documents?filename=faq.md` | Remove one document from the knowledge base |
 | `DELETE` | `/api/v1/documents?all=true` | Clear the entire knowledge base |
 | `GET` | `/api/v1/admin/documents` | List indexed documents (admin) |
@@ -110,25 +122,31 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ### Manage the knowledge base
 
+These routes need a signed-in Super Admin or Admin. Sign in once and reuse the cookie:
+
+```bash
+curl -c cookies.txt -X POST http://localhost:8000/api/v1/auth/login \n  -H "Content-Type: application/json" \n  -d '{"email": "you@example.com", "password": "..."}'
+```
+
 List what is indexed:
 
 ```bash
-curl http://localhost:8000/api/v1/documents
+curl -b cookies.txt http://localhost:8000/api/v1/documents
 ```
 
 Remove one file:
 
 ```bash
-curl -X DELETE "http://localhost:8000/api/v1/documents?filename=faq.md"
+curl -b cookies.txt -X DELETE "http://localhost:8000/api/v1/documents?filename=faq.md"
 ```
 
 Clear everything:
 
 ```bash
-curl -X DELETE "http://localhost:8000/api/v1/documents?all=true"
+curl -b cookies.txt -X DELETE "http://localhost:8000/api/v1/documents?all=true"
 ```
 
-> These endpoints are for operators/admins. Protect them in production (VPN, API key, or internal network only). Website visitors only use the chat widget.
+> These endpoints are for operators/admins and require sign-in. Website visitors only use the chat widget.
 
 ## Google Calendar OAuth (Phase B1)
 
@@ -172,11 +190,11 @@ BOOKING_TIMEZONE=Asia/Kolkata
 
 ```bash
 # Returns JSON with auth_url — open it in a browser
-curl -H "Authorization: Bearer $ADMIN_API_KEY" \
+curl -b cookies.txt \
   http://localhost:8000/api/v1/admin/google/oauth/start
 
 # Or redirect directly from the browser (requires admin auth)
-curl -L -H "Authorization: Bearer $ADMIN_API_KEY" \
+curl -L -b cookies.txt \
   "http://localhost:8000/api/v1/admin/google/oauth/start?redirect=true"
 ```
 
@@ -185,14 +203,14 @@ After Google redirects back to the API callback URL, you are sent to `/admin/cal
 Check connection:
 
 ```bash
-curl -H "Authorization: Bearer $ADMIN_API_KEY" \
+curl -b cookies.txt \
   http://localhost:8000/api/v1/admin/google/oauth/status
 ```
 
 Disconnect:
 
 ```bash
-curl -X DELETE -H "Authorization: Bearer $ADMIN_API_KEY" \
+curl -X DELETE -b cookies.txt \
   http://localhost:8000/api/v1/admin/google/oauth/disconnect
 ```
 
@@ -206,7 +224,7 @@ Returns `{ "date", "timezone", "slots": [{ "start", "end" }] }`. Slots respect b
 
 If calendar is not connected, availability returns `503` with a clear message.
 
-> OAuth admin routes require `ADMIN_API_KEY` (except the public Google callback). See admin dashboard section below.
+> OAuth admin routes require a signed-in user (except the public Google callback). See the admin dashboard section below.
 
 ### Create a booking (Phase B2)
 
@@ -299,15 +317,38 @@ Leave `NEXT_PUBLIC_CHAT_TITLE` and `NEXT_PUBLIC_CHAT_SUBTITLE` empty for a clean
 
 ## Admin dashboard
 
-Generate a strong `ADMIN_API_KEY` and set it in `.env` (API) — use the same value when signing in at `/admin`. Example generators:
+Admins sign in with email and password. The session lives in an `httpOnly` cookie (`webchatbot_session`, 8 hours by default, `SESSION_TTL_HOURS`); only a hash of the token is stored in Postgres (`user_sessions`).
+
+There are three user types:
+
+| User type | Belongs to a client | Can use |
+|-----------|---------------------|---------|
+| Super Admin | No (platform level) | Everything, all clients |
+| Admin | Yes | Users, documents, calendar, business hours, audit log; view and cancel bookings |
+| Support | Yes | Calendar, business hours, bookings |
+
+All three see the dashboard summary. Super Admins are created only with a script, never through the API. From the `backend` folder, using the backend virtualenv:
 
 ```bash
-openssl rand -hex 32
-# or
-python -c "import secrets; print(secrets.token_hex(32))"
+.venv/Scripts/python ../scripts/create_super_admin.py --email you@example.com --name "Your Name"
 ```
 
-Open `http://localhost:3000/admin` — you will be prompted for the key, which is stored in `sessionStorage` for the browser session. Protected admin API routes require `Authorization: Bearer <ADMIN_API_KEY>`; the OAuth callback remains public for Google redirects. Login attempts are rate-limited per client IP (`ADMIN_LOGIN_RATE_LIMIT_PER_HOUR`, default `20`).
+You are asked for the password twice (at least 12 characters). For automated setups, set `SUPER_ADMIN_PASSWORD` instead. If a Super Admin forgets their password, `--reset-password` sets a new one, reactivates the account and signs it out everywhere:
+
+```bash
+.venv/Scripts/python ../scripts/create_super_admin.py --email you@example.com --reset-password
+```
+
+Super Admins then create clients and their Admins in the admin app; Admins add their own Support users.
+
+Sign in at `http://localhost:3000/admin`, or with curl:
+
+```bash
+curl -c cookies.txt -X POST http://localhost:8000/api/v1/auth/login \n  -H "Content-Type: application/json" \n  -d '{"email": "you@example.com", "password": "..."}'
+curl -b cookies.txt http://localhost:8000/api/v1/auth/me
+```
+
+After 5 failed attempts for the same email and IP within 15 minutes, login returns `429` (`LOGIN_MAX_FAILED_ATTEMPTS`, `LOGIN_FAILURE_WINDOW_MINUTES`). State-changing admin requests from origins not in `ALLOWED_ORIGINS` are rejected with `403`. The Google OAuth callback remains public for Google redirects.
 
 ### Railway deployment
 
@@ -315,10 +356,10 @@ Set these on the **API** service:
 
 | Variable | Purpose |
 |----------|---------|
-| `ADMIN_API_KEY` | Bearer token for all `/api/v1/admin/*` routes (except OAuth callback) |
 | `ADMIN_FRONTEND_URL` | Next.js base URL — OAuth redirects to `/admin/calendar` here |
 | `GOOGLE_OAUTH_REDIRECT_URI` | API callback URL registered in Google Cloud Console |
-| `ADMIN_LOGIN_RATE_LIMIT_PER_HOUR` | Optional brute-force protection (default `20`) |
+| `ALLOWED_ORIGINS` | Must include the frontend URL (CORS and the admin CSRF check) |
+| `SESSION_COOKIE_SECURE` | Leave unset; the cookie is `Secure` when `APP_ENV=production` |
 
 Set on the **frontend** service:
 
@@ -328,7 +369,7 @@ Set on the **frontend** service:
 
 ### Quick walkthrough (&lt; 10 min)
 
-1. Sign in at `/admin` with your `ADMIN_API_KEY`.
+1. Sign in at `/admin` with your email and password.
 2. **Home** — summary cards: document count, bookings today, calendar status; prompt deploy note.
 3. **Documents** — upload a PDF, confirm it appears in the list.
 4. **Calendar** — connect Google Calendar (OAuth).
@@ -340,7 +381,7 @@ Set on the **frontend** service:
 Summary cards load from `GET /api/v1/admin/dashboard/summary` (single request): indexed document count, bookings scheduled today (business timezone), and Google Calendar connection status. A static panel notes that chat prompts are code-only in `backend/app/agents/public/prompts/`.
 
 ```bash
-curl -H "Authorization: Bearer $ADMIN_API_KEY" \
+curl -b cookies.txt \
   http://localhost:8000/api/v1/admin/dashboard/summary
 ```
 
@@ -349,7 +390,7 @@ curl -H "Authorization: Bearer $ADMIN_API_KEY" \
 After signing in, open **Documents** in the sidebar to upload PDFs, DOCX, Markdown, and other supported files, view chunk counts, reindex a document, or delete it from Qdrant. Uploads use the same Docling → LlamaIndex worker pipeline as the public ingest API.
 
 ```bash
-curl -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:8000/api/v1/admin/documents
+curl -b cookies.txt http://localhost:8000/api/v1/admin/documents
 ```
 
 ### Business hours (`/admin/settings`)
@@ -357,7 +398,7 @@ curl -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:8000/api/v1/admi
 Configure weekly schedule, slot duration, buffer minutes, and timezone. Settings are stored in Postgres and override env defaults for the availability API.
 
 ```bash
-curl -H "Authorization: Bearer $ADMIN_API_KEY" \
+curl -b cookies.txt \
   http://localhost:8000/api/v1/admin/settings/business-hours
 ```
 
@@ -370,18 +411,20 @@ Connect or disconnect Google Calendar from the admin UI. Shows connected account
 View and cancel appointments created via the chat widget or `POST /api/v1/booking`. Filter by date range and status; cancel removes the Google Calendar event and sets status to `cancelled`.
 
 ```bash
-curl -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:8000/api/v1/admin/bookings
+curl -b cookies.txt http://localhost:8000/api/v1/admin/bookings
 
-curl -X PATCH -H "Authorization: Bearer $ADMIN_API_KEY" \
+curl -X PATCH -b cookies.txt \
   http://localhost:8000/api/v1/admin/bookings/<booking-id>
 ```
 
 ### Audit log (optional)
 
-Key admin mutations are recorded in Postgres (`admin_audit_log`): document upload/delete/reindex, booking cancel, business-hours update, calendar disconnect.
+Key admin mutations are recorded in Postgres (`admin_audit_log`) with who did it (`user_id`) and which client it concerns (`client_id`): document upload/delete/reindex, booking cancel, business-hours update, calendar disconnect, client create/rename/suspend/activate, user create/update/activate/deactivate/password reset, and own password changes.
+
+Super Admins see every entry and can filter with `?client_id=`. Admins see only their own client's entries.
 
 ```bash
-curl -H "Authorization: Bearer $ADMIN_API_KEY" \
+curl -b cookies.txt \
   "http://localhost:8000/api/v1/admin/audit-log?limit=50"
 ```
 
@@ -393,6 +436,14 @@ curl -H "Authorization: Bearer $ADMIN_API_KEY" \
 cd backend
 pip install -e ".[dev]"
 pytest
+```
+
+Tests never read your `.env` files and never reach a real database, Qdrant, worker, LLM or Google: `tests/conftest.py` replaces those settings with unreachable addresses and records audit writes in memory.
+
+The database tests in `tests/integration/` (migrations, login and sessions, roles, user management, audit trail, `create_super_admin.py`) are skipped unless you point them at a PostgreSQL server where your user may create databases. They create a throwaway database, then drop it; the database named in the URL is not written to:
+
+```bash
+TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres pytest
 ```
 
 ### Switch LLM provider

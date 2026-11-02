@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +17,11 @@ class AdminAuditLogEntry(BaseModel):
     resource_id: str | None = None
     client_ip: str | None = None
     created_at: datetime
+    # Who acted (null for entries written before sign-in existed) and which client it concerns
+    # (null for platform-level entries).
+    user_id: UUID | None = None
+    user_email: str | None = None
+    client_id: UUID | None = None
 
 
 class AdminAuditLogListResponse(BaseModel):

@@ -3,15 +3,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
+from auth_helpers import signed_in, signed_out
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.api.routes.admin import settings as admin_settings
 from app.booking.availability import generate_candidate_slots, get_availability_for_date
 from app.booking.config import BusinessHoursConfig
+from app.core.roles import UserType
 from app.db.models.admin_settings import BusinessHoursRecord
-
-TEST_ADMIN_KEY = "test-admin-key-secret"
 
 
 @pytest.fixture
@@ -19,17 +19,6 @@ def admin_settings_app():
     test_app = FastAPI()
     test_app.include_router(admin_settings.router, prefix="/api/v1")
     return test_app
-
-
-@pytest.fixture
-def configured_admin_settings():
-    settings = MagicMock()
-    settings.admin_api_key = TEST_ADMIN_KEY
-    return settings
-
-
-def _auth_headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {TEST_ADMIN_KEY}"}
 
 
 SAMPLE_DB_RECORD = BusinessHoursRecord(
@@ -55,9 +44,9 @@ SAMPLE_DB_CONFIG = BusinessHoursConfig(
 
 @pytest.mark.asyncio
 async def test_get_business_hours_without_auth_returns_401(
-    admin_settings_app, configured_admin_settings
+    admin_settings_app
 ):
-    with patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings):
+    with signed_out(admin_settings_app):
         transport = ASGITransport(app=admin_settings_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get("/api/v1/admin/settings/business-hours")
@@ -67,10 +56,10 @@ async def test_get_business_hours_without_auth_returns_401(
 
 @pytest.mark.asyncio
 async def test_get_business_hours_with_auth_returns_settings(
-    admin_settings_app, configured_admin_settings
+    admin_settings_app
 ):
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_in(admin_settings_app, UserType.admin),
         patch(
             "app.api.routes.admin.settings.get_business_hours_config",
             new_callable=AsyncMock,
@@ -86,7 +75,6 @@ async def test_get_business_hours_with_auth_returns_settings(
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get(
                 "/api/v1/admin/settings/business-hours",
-                headers=_auth_headers(),
             )
 
     assert response.status_code == 200
@@ -98,11 +86,11 @@ async def test_get_business_hours_with_auth_returns_settings(
 
 
 @pytest.mark.asyncio
-async def test_put_business_hours_updates_settings(admin_settings_app, configured_admin_settings):
+async def test_put_business_hours_updates_settings(admin_settings_app):
     mock_upsert = AsyncMock(return_value=SAMPLE_DB_RECORD)
 
     with (
-        patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings),
+        signed_in(admin_settings_app, UserType.admin),
         patch("app.api.routes.admin.settings.upsert_business_hours", mock_upsert),
         patch(
             "app.api.routes.admin.settings.get_business_hours_config",
@@ -114,7 +102,6 @@ async def test_put_business_hours_updates_settings(admin_settings_app, configure
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.put(
                 "/api/v1/admin/settings/business-hours",
-                headers=_auth_headers(),
                 json={
                     "business_days": [1, 2, 3, 4, 5],
                     "start_time": "10:00",
@@ -132,9 +119,9 @@ async def test_put_business_hours_updates_settings(admin_settings_app, configure
 
 @pytest.mark.asyncio
 async def test_put_business_hours_without_auth_returns_401(
-    admin_settings_app, configured_admin_settings
+    admin_settings_app
 ):
-    with patch("app.api.deps.admin_auth.get_settings", return_value=configured_admin_settings):
+    with signed_out(admin_settings_app):
         transport = ASGITransport(app=admin_settings_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.put(
