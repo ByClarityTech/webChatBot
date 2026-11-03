@@ -61,6 +61,18 @@ async def get_client(client_id: UUID) -> ClientRecord | None:
     return _row_to_record(row)
 
 
+async def get_client_by_slug(slug: str) -> ClientRecord | None:
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT {_CLIENT_COLUMNS} FROM clients c WHERE c.slug = %s", (slug,)
+            )
+            row = await cur.fetchone()
+    if row is None:
+        return None
+    return _row_to_record(row)
+
+
 async def list_clients() -> list[ClientRecord]:
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:

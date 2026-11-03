@@ -1,22 +1,67 @@
-import tempfile
+import logging
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, status
+from pydantic import BaseModel, Field
 
-from app.config import get_settings
+from app.config import WorkerSettings, get_settings
 from app.docling_converter import convert_to_markdown
-from app.index_manager import (
-    delete_all_documents,
-    delete_by_filename,
-    delete_by_source_hash,
-    ensure_collection,
-    get_filename_for_source_hash,
-    list_indexed_documents,
-    upsert_documents,
-)
+from app.index_manager import delete_document_chunks, ensure_collection, upsert_documents
 from app.public_pipeline import build_documents
 
-app = FastAPI(title="Public Docs Chatbot Worker", version="0.1.0")
+logger = logging.getLogger(__name__)
+
+# Internal service: only the backend calls it, and it trusts the client_id it is given.
+# Never expose this port publicly.
+app = FastAPI(title="Public Docs Chatbot Worker", version="0.2.0")
+
+# Same list as backend/app/services/document_worker.py; the suffix becomes part of a path.
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".html", ".htm", ".md", ".txt"}
+
+
+class ReindexRequest(BaseModel):
+    client_id: UUID
+    filename: str = Field(..., min_length=1, max_length=255)
+
+
+# Files live under <dir>/<client_id>/<document_id>.<ext>; the IDs are UUIDs, so they are
+# safe path parts.
+def _upload_path(settings: WorkerSettings, client_id: UUID, document_id: UUID, suffix: str) -> Path:
+    return Path(settings.upload_dir) / str(client_id) / f"{document_id}{suffix}"
+
+
+def _cache_path(settings: WorkerSettings, client_id: UUID, document_id: UUID) -> Path:
+    return Path(settings.docling_cache_dir) / str(client_id) / f"{document_id}.md"
+
+
+def _stored_uploads(settings: WorkerSettings, client_id: UUID, document_id: UUID) -> list[Path]:
+    return sorted((Path(settings.upload_dir) / str(client_id)).glob(f"{document_id}.*"))
+
+
+def _remove_stored_artifacts(settings: WorkerSettings, client_id: UUID, document_id: UUID) -> None:
+    for path in _stored_uploads(settings, client_id, document_id):
+        path.unlink(missing_ok=True)
+    _cache_path(settings, client_id, document_id).unlink(missing_ok=True)
+
+
+def _index_markdown(
+    markdown: str,
+    filename: str,
+    client_id: UUID,
+    document_id: UUID,
+    settings: WorkerSettings,
+) -> int:
+    documents = build_documents(
+        markdown=markdown,
+        filename=filename,
+        client_id=client_id,
+        document_id=document_id,
+        settings=settings,
+    )
+    ensure_collection(settings)
+    delete_document_chunks(client_id, document_id, settings)
+    return upsert_documents(documents, settings)
 
 
 @app.get("/health")
@@ -26,8 +71,9 @@ async def health() -> dict[str, str]:
 
 @app.post("/ingest")
 async def ingest(
+    client_id: UUID = Form(...),
+    document_id: UUID = Form(...),
     file: UploadFile = File(...),
-    source_hash: str = Form(...),
 ) -> dict[str, int | str]:
     settings = get_settings()
 
@@ -35,142 +81,69 @@ async def ingest(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Filename is required")
 
     suffix = Path(file.filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unsupported file type: {suffix}"
+        )
     content = await file.read()
     if not content:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty")
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(content)
-        temp_path = Path(tmp.name)
-
+    stored_path = _upload_path(settings, client_id, document_id, suffix)
     try:
-        markdown, computed_hash = convert_to_markdown(temp_path, settings)
-        effective_hash = source_hash or computed_hash
-        upload_dir = Path(settings.upload_dir)
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        stored_path = upload_dir / f"{effective_hash}{suffix}"
+        stored_path.parent.mkdir(parents=True, exist_ok=True)
         stored_path.write_bytes(content)
-        documents = build_documents(
-            markdown=markdown,
-            filename=file.filename,
-            source_hash=effective_hash,
-            settings=settings,
-        )
-        ensure_collection(settings)
-        delete_by_source_hash(effective_hash, settings)
-        chunks_indexed = upsert_documents(documents, settings)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        markdown = convert_to_markdown(stored_path, _cache_path(settings, client_id, document_id))
+        chunks_indexed = _index_markdown(markdown, file.filename, client_id, document_id, settings)
     except Exception as exc:
+        # Leave nothing half-indexed: the backend marks the source as failed.
+        _remove_stored_artifacts(settings, client_id, document_id)
+        try:
+            delete_document_chunks(client_id, document_id, settings)
+        except Exception:  # noqa: BLE001 - report the original error, not the cleanup's
+            logger.warning("Could not remove chunks of failed document %s", document_id, exc_info=True)
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ingestion failed: {exc}",
         ) from exc
-    finally:
-        temp_path.unlink(missing_ok=True)
 
     return {
         "status": "indexed",
         "chunks_indexed": chunks_indexed,
-        "source_hash": effective_hash,
+        "document_id": str(document_id),
     }
 
 
-@app.get("/documents")
-async def list_documents() -> dict[str, object]:
+@app.delete("/documents/{document_id}")
+async def delete_document(document_id: UUID, client_id: UUID = Query(...)) -> dict[str, str]:
     settings = get_settings()
-    documents, total_chunks = list_indexed_documents(settings)
-    return {"documents": documents, "total_chunks": total_chunks}
+    delete_document_chunks(client_id, document_id, settings)
+    _remove_stored_artifacts(settings, client_id, document_id)
+    return {"status": "deleted", "document_id": str(document_id)}
 
 
-@app.delete("/documents")
-async def delete_documents(
-    filename: str | None = Query(default=None),
-    all_documents: bool = Query(default=False, alias="all"),
-) -> dict[str, str]:
+@app.post("/documents/{document_id}/reindex")
+async def reindex_document(document_id: UUID, body: ReindexRequest) -> dict[str, int | str]:
     settings = get_settings()
+    client_id = body.client_id
+    cache_file = _cache_path(settings, client_id, document_id)
+    stored_files = _stored_uploads(settings, client_id, document_id)
 
-    if all_documents:
-        delete_all_documents(settings)
-        return {"status": "deleted", "message": "All indexed documents removed from the knowledge base"}
-
-    if not filename:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Provide ?filename=... to delete one document, or ?all=true to clear the knowledge base",
-        )
-
-    delete_by_filename(filename, settings)
-    return {
-        "status": "deleted",
-        "filename": filename,
-        "message": f"Removed all chunks for {filename}",
-    }
-
-
-def _remove_stored_artifacts(source_hash: str, settings) -> None:
-    upload_dir = Path(settings.upload_dir)
-    for path in upload_dir.glob(f"{source_hash}.*"):
-        path.unlink(missing_ok=True)
-
-    cache_file = Path(settings.docling_cache_dir) / f"{source_hash}.md"
-    cache_file.unlink(missing_ok=True)
-
-
-@app.delete("/documents/source/{source_hash}")
-async def delete_document_by_source(source_hash: str) -> dict[str, str]:
-    settings = get_settings()
-    filename = get_filename_for_source_hash(source_hash, settings)
-    delete_by_source_hash(source_hash, settings)
-    _remove_stored_artifacts(source_hash, settings)
-    return {
-        "status": "deleted",
-        "source_hash": source_hash,
-        "filename": filename,
-        "message": f"Removed document {filename or source_hash} from the knowledge base",
-    }
-
-
-@app.post("/documents/source/{source_hash}/reindex")
-async def reindex_document_by_source(source_hash: str) -> dict[str, int | str]:
-    settings = get_settings()
-    upload_dir = Path(settings.upload_dir)
-    stored_files = sorted(upload_dir.glob(f"{source_hash}.*"))
-    filename = get_filename_for_source_hash(source_hash, settings)
-
-    if stored_files:
-        stored_path = stored_files[0]
-        filename = filename or stored_path.name
-        try:
-            markdown, computed_hash = convert_to_markdown(stored_path, settings)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    else:
-        cache_file = Path(settings.docling_cache_dir) / f"{source_hash}.md"
-        if not cache_file.exists():
+    try:
+        if stored_files:
+            markdown = convert_to_markdown(stored_files[0], cache_file)
+        elif cache_file.exists():
+            markdown = cache_file.read_text(encoding="utf-8")
+        else:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Stored upload not found for this document; upload the file again",
             )
-        if not filename:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Document metadata not found in index; upload the file again",
-            )
-        markdown = cache_file.read_text(encoding="utf-8")
-        computed_hash = source_hash
-
-    try:
-        effective_hash = source_hash or computed_hash
-        documents = build_documents(
-            markdown=markdown,
-            filename=filename,
-            source_hash=effective_hash,
-            settings=settings,
-        )
-        ensure_collection(settings)
-        delete_by_source_hash(effective_hash, settings)
-        chunks_indexed = upsert_documents(documents, settings)
+        chunks_indexed = _index_markdown(markdown, body.filename, client_id, document_id, settings)
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
@@ -182,6 +155,5 @@ async def reindex_document_by_source(source_hash: str) -> dict[str, int | str]:
     return {
         "status": "indexed",
         "chunks_indexed": chunks_indexed,
-        "source_hash": effective_hash,
-        "filename": filename,
+        "document_id": str(document_id),
     }

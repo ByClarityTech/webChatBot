@@ -1,4 +1,6 @@
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -6,6 +8,39 @@ from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessage
 
 from app.api.routes.chat import router
+from app.db.models.client import ClientRecord
+
+
+@pytest.fixture(autouse=True)
+def clients(monkeypatch):
+    """Clients by slug and the chat_threads table, in memory."""
+    known = {
+        "example": make_client("example"),
+        "other": make_client("other"),
+        "paused": make_client("paused", status="suspended"),
+    }
+    threads: dict = {}
+
+    async def get_client_by_slug(slug):
+        return known.get(slug)
+
+    async def claim_chat_thread(thread_id, client_id):
+        return threads.setdefault(thread_id, client_id)
+
+    monkeypatch.setattr("app.api.routes.chat.get_client_by_slug", get_client_by_slug)
+    monkeypatch.setattr("app.api.routes.chat.claim_chat_thread", claim_chat_thread)
+    return known
+
+
+def make_client(slug, status="active"):
+    return ClientRecord(
+        id=uuid4(),
+        name=slug.title(),
+        slug=slug,
+        status=status,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
 
 
 @pytest.fixture
@@ -37,7 +72,7 @@ async def test_chat_returns_reply_and_sources(app):
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/api/v1/chat",
-            json={"message": "What services do you offer?"},
+            json={"message": "What services do you offer?", "client": "example"},
         )
 
     assert response.status_code == 200
@@ -51,7 +86,7 @@ async def test_chat_returns_reply_and_sources(app):
 async def test_chat_rejects_empty_message(app):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post("/api/v1/chat", json={"message": ""})
+        response = await client.post("/api/v1/chat", json={"message": "", "client": "example"})
 
     assert response.status_code == 422
 
@@ -78,7 +113,7 @@ async def test_chat_returns_booking_action(app):
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/api/v1/chat",
-            json={"message": "I want to book a demo call"},
+            json={"message": "I want to book a demo call", "client": "example"},
         )
 
     assert response.status_code == 200
@@ -86,3 +121,55 @@ async def test_chat_returns_booking_action(app):
     assert payload["action"] == "open_booking_form"
     assert payload["sources"] == []
     assert payload["reply"]
+
+
+async def post_chat(app, **body):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        return await client.post("/api/v1/chat", json={"message": "Hours?", **body})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},  # no client
+        {"client": "Not A Slug"},
+        {"client": "example", "thread_id": "not-a-uuid"},
+    ],
+)
+async def test_chat_needs_a_valid_client_slug_and_thread_id(app, body):
+    response = await post_chat(app, **body)
+    assert response.status_code == 422
+    app.state.agent_graph.ainvoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slug", ["unknown", "paused"])
+async def test_unknown_or_suspended_client_is_not_available(app, slug):
+    response = await post_chat(app, client=slug)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "This assistant is not available"
+    app.state.agent_graph.ainvoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_graph_gets_the_clients_id(app, clients):
+    response = await post_chat(app, client="example")
+    assert response.status_code == 200
+    state = app.state.agent_graph.ainvoke.await_args.args[0]
+    assert state["client_id"] == str(clients["example"].id)
+
+
+@pytest.mark.asyncio
+async def test_a_thread_continues_only_on_the_client_that_started_it(app):
+    first = (await post_chat(app, client="example")).json()["thread_id"]
+
+    same = (await post_chat(app, client="example", thread_id=first)).json()["thread_id"]
+    assert same == first
+
+    # Replayed on another client's widget: a new conversation, not the old history.
+    elsewhere = (await post_chat(app, client="other", thread_id=first)).json()["thread_id"]
+    assert elsewhere != first
+    config = app.state.agent_graph.ainvoke.await_args.kwargs["config"]
+    assert config["configurable"]["thread_id"] == elsewhere

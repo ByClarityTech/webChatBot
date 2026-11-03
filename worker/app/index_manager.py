@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from llama_index.core import Settings as LlamaSettings, StorageContext, VectorStoreIndex
 from llama_index.core.schema import Document
 from llama_index.embeddings.openai import OpenAIEmbedding
@@ -6,6 +8,12 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
 from app.config import WorkerSettings
+
+# Every chunk carries the owning client and knowledge source (payload keys). All reads and
+# deletes go through client_filter, so nothing here can touch another client's chunks.
+# Not "document_id": LlamaIndex's Qdrant store writes its own value under that key.
+CLIENT_ID_KEY = "client_id"
+SOURCE_ID_KEY = "source_id"
 
 
 def _configure_embeddings(settings: WorkerSettings) -> None:
@@ -19,142 +27,58 @@ def _get_client(settings: WorkerSettings) -> QdrantClient:
     return QdrantClient(url=settings.qdrant_url)
 
 
+def _collection_exists(client: QdrantClient, settings: WorkerSettings) -> bool:
+    collections = {collection.name for collection in client.get_collections().collections}
+    return settings.qdrant_collection in collections
+
+
+def client_filter(client_id: UUID, document_id: UUID | None = None) -> qmodels.Filter:
+    """Chunks of one client, optionally of one of its documents. client_id is required."""
+    must = [qmodels.FieldCondition(key=CLIENT_ID_KEY, match=qmodels.MatchValue(value=str(client_id)))]
+    if document_id is not None:
+        must.append(
+            qmodels.FieldCondition(
+                key=SOURCE_ID_KEY, match=qmodels.MatchValue(value=str(document_id))
+            )
+        )
+    return qmodels.Filter(must=must)
+
+
 def ensure_collection(settings: WorkerSettings) -> None:
     client = _get_client(settings)
-    collections = {collection.name for collection in client.get_collections().collections}
-    if settings.qdrant_collection in collections:
-        return
-
-    client.create_collection(
-        collection_name=settings.qdrant_collection,
-        vectors_config=qmodels.VectorParams(size=1536, distance=qmodels.Distance.COSINE),
-    )
-
-
-def delete_by_filename(filename: str, settings: WorkerSettings) -> None:
-    client = _get_client(settings)
-    collections = {collection.name for collection in client.get_collections().collections}
-    if settings.qdrant_collection not in collections:
-        return
-
-    client.delete(
-        collection_name=settings.qdrant_collection,
-        points_selector=qmodels.FilterSelector(
-            filter=qmodels.Filter(
-                must=[
-                    qmodels.FieldCondition(
-                        key="filename",
-                        match=qmodels.MatchValue(value=filename),
-                    )
-                ]
-            )
-        ),
-    )
-
-
-def delete_all_documents(settings: WorkerSettings) -> None:
-    client = _get_client(settings)
-    collections = {collection.name for collection in client.get_collections().collections}
-    if settings.qdrant_collection not in collections:
-        return
-
-    client.delete_collection(collection_name=settings.qdrant_collection)
-
-
-def list_indexed_documents(settings: WorkerSettings) -> tuple[list[dict[str, str | int]], int]:
-    client = _get_client(settings)
-    collections = {collection.name for collection in client.get_collections().collections}
-    if settings.qdrant_collection not in collections:
-        return [], 0
-
-    counts: dict[str, dict[str, str | int]] = {}
-    offset = None
-
-    while True:
-        points, offset = client.scroll(
+    if not _collection_exists(client, settings):
+        client.create_collection(
             collection_name=settings.qdrant_collection,
-            limit=100,
-            offset=offset,
-            with_payload=True,
-            with_vectors=False,
+            vectors_config=qmodels.VectorParams(size=1536, distance=qmodels.Distance.COSINE),
         )
-        if not points:
-            break
-
-        for point in points:
-            payload = point.payload or {}
-            metadata = payload.get("metadata") or {}
-            filename = str(payload.get("filename") or metadata.get("filename", "unknown"))
-            source_hash = str(payload.get("source_hash") or metadata.get("source_hash", ""))
-            indexed_at = str(payload.get("indexed_at") or metadata.get("indexed_at", ""))
-            entry = counts.setdefault(
-                source_hash or filename,
-                {
-                    "filename": filename,
-                    "source_hash": source_hash,
-                    "chunk_count": 0,
-                    "indexed_at": indexed_at,
-                },
-            )
-            entry["chunk_count"] = int(entry["chunk_count"]) + 1
-            if indexed_at and not entry.get("indexed_at"):
-                entry["indexed_at"] = indexed_at
-
-        if offset is None:
-            break
-
-    documents = sorted(counts.values(), key=lambda item: str(item["filename"]))
-    total_chunks = sum(int(item["chunk_count"]) for item in documents)
-    return documents, total_chunks
+    # Indexed so the per-client filter stays fast; creating an existing index is a no-op.
+    for key in (CLIENT_ID_KEY, SOURCE_ID_KEY):
+        client.create_payload_index(
+            collection_name=settings.qdrant_collection,
+            field_name=key,
+            field_schema=qmodels.PayloadSchemaType.KEYWORD,
+        )
 
 
-def get_filename_for_source_hash(source_hash: str, settings: WorkerSettings) -> str | None:
+def count_document_chunks(client_id: UUID, document_id: UUID, settings: WorkerSettings) -> int:
     client = _get_client(settings)
-    collections = {collection.name for collection in client.get_collections().collections}
-    if settings.qdrant_collection not in collections:
-        return None
-
-    points, _offset = client.scroll(
+    if not _collection_exists(client, settings):
+        return 0
+    return client.count(
         collection_name=settings.qdrant_collection,
-        scroll_filter=qmodels.Filter(
-            must=[
-                qmodels.FieldCondition(
-                    key="source_hash",
-                    match=qmodels.MatchValue(value=source_hash),
-                )
-            ]
-        ),
-        limit=1,
-        with_payload=True,
-        with_vectors=False,
-    )
-    if not points:
-        return None
-
-    payload = points[0].payload or {}
-    metadata = payload.get("metadata") or {}
-    filename = payload.get("filename") or metadata.get("filename")
-    return str(filename) if filename else None
+        count_filter=client_filter(client_id, document_id),
+        exact=True,
+    ).count
 
 
-def delete_by_source_hash(source_hash: str, settings: WorkerSettings) -> None:
+def delete_document_chunks(client_id: UUID, document_id: UUID, settings: WorkerSettings) -> None:
     client = _get_client(settings)
-    collections = {collection.name for collection in client.get_collections().collections}
-    if settings.qdrant_collection not in collections:
+    if not _collection_exists(client, settings):
         return
 
     client.delete(
         collection_name=settings.qdrant_collection,
-        points_selector=qmodels.FilterSelector(
-            filter=qmodels.Filter(
-                must=[
-                    qmodels.FieldCondition(
-                        key="source_hash",
-                        match=qmodels.MatchValue(value=source_hash),
-                    )
-                ]
-            )
-        ),
+        points_selector=qmodels.FilterSelector(filter=client_filter(client_id, document_id)),
     )
 
 

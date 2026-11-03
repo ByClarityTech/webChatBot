@@ -15,14 +15,16 @@ Embeddable RAG website assistant — upload your public documentation, chat with
 ## Architecture
 
 ```
-Visitor → Next.js Widget → POST /api/v1/chat
+Visitor → Next.js Widget (/embed?client=<slug>) → POST /api/v1/chat {client, message}
                               ↓
                     LangGraph (retrieve → generate)
                               ↓
-              Qdrant (public_site_docs) + PostgreSQL (thread memory)
+   Qdrant (public_site_docs, filtered by client_id) + PostgreSQL (thread memory)
 
-Upload → POST /api/v1/documents/ingest → Worker (Docling → LlamaIndex → Qdrant)
+Admin upload → POST /api/v1/admin/documents/upload → Worker (Docling → LlamaIndex → Qdrant)
 ```
+
+Every document belongs to one client. Its chunks carry `client_id` and `source_id`, its row lives in `knowledge_sources`, and the chatbot on a client's widget searches only that client's chunks. Conversation threads are tied to the client they started on (`chat_threads`).
 
 ## Quickstart
 
@@ -52,27 +54,27 @@ curl http://localhost:8000/api/v1/health
 
 ### 3. Seed sample documents
 
-Seeding signs in as a Super Admin or Admin (see **Admin dashboard** below to create the first user):
+Documents belong to a client, so create one first (Super Admin, **Clients** page; see **Admin dashboard** below to create the first user). Seeding signs in as a Super Admin or Admin:
 
 ```bash
 pip install httpx
-python scripts/seed_public_docs.py --email you@example.com
+python scripts/seed_public_docs.py --email you@example.com --client <slug>
 ```
 
-The password is read from `SEED_ADMIN_PASSWORD` or prompted for.
+A Super Admin must pass `--client`; an Admin always seeds their own client and may leave it out. The password is read from `SEED_ADMIN_PASSWORD` or prompted for. Files the client already has are skipped.
 
 ### 4. Chat via API
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "What services do you offer?"}'
+  -d '{"message": "What services do you offer?", "client": "<slug>"}'
 ```
 
 ### 5. Chat via CLI
 
 ```bash
-python scripts/chat_cli.py
+python scripts/chat_cli.py --client <slug>
 ```
 
 ### 6. Chat UI (optional)
@@ -84,7 +86,7 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open `http://localhost:3000/?client=<slug>`, or the widget view at `http://localhost:3000/embed?client=<slug>`. Without a known, active client the page shows "This assistant is not available".
 
 ## API
 
@@ -99,21 +101,17 @@ Open [http://localhost:3000](http://localhost:3000).
 | `GET` / `PATCH` | `/api/v1/admin/clients/{client_id}` | View, rename, suspend or activate a client (Super Admin) |
 | `GET` / `POST` | `/api/v1/admin/users` | List or create users (Super Admin: any client; Admin: Support users in own client) |
 | `GET` / `PATCH` | `/api/v1/admin/users/{user_id}` | View, rename, deactivate or reset the password of a user |
-| `GET` | `/api/v1/documents` | List indexed documents (legacy; Super Admin or Admin) |
-| `POST` | `/api/v1/documents/ingest` | Upload and index a document (legacy; Super Admin or Admin) |
-| `DELETE` | `/api/v1/documents?filename=faq.md` | Remove one document from the knowledge base |
-| `DELETE` | `/api/v1/documents?all=true` | Clear the entire knowledge base |
-| `GET` | `/api/v1/admin/documents` | List indexed documents (admin) |
-| `POST` | `/api/v1/admin/documents/upload` | Upload and index a document (admin) |
-| `DELETE` | `/api/v1/admin/documents/{source_id}` | Remove document by source hash (admin) |
-| `POST` | `/api/v1/admin/documents/{source_id}/reindex` | Re-ingest one document (admin) |
-| `POST` | `/api/v1/chat` | Chat with RAG + memory; booking intent returns `action: "open_booking_form"` |
+| `GET` | `/api/v1/admin/documents` | List a client's documents (Super Admin: `?client_id=` required) |
+| `POST` | `/api/v1/admin/documents/upload` | Upload and index a document, up to 10 MB (409 if the client already has the file) |
+| `DELETE` | `/api/v1/admin/documents/{document_id}` | Remove a document and its chunks |
+| `POST` | `/api/v1/admin/documents/{document_id}/reindex` | Re-index one document from its stored file |
+| `POST` | `/api/v1/chat` | Chat with RAG + memory for one client (`client` slug required); booking intent returns `action: "open_booking_form"` |
 | `GET` | `/api/v1/admin/google/oauth/start` | Start Google Calendar OAuth (admin) |
 | `GET` | `/api/v1/admin/google/oauth/status` | Google Calendar connection status |
 | `DELETE` | `/api/v1/admin/google/oauth/disconnect` | Disconnect Google Calendar (admin) |
 | `GET` | `/api/v1/admin/settings/business-hours` | Read business hours config (admin) |
 | `PUT` | `/api/v1/admin/settings/business-hours` | Update business hours config (admin) |
-| `GET` | `/api/v1/admin/dashboard/summary` | Dashboard summary counts (admin) |
+| `GET` | `/api/v1/admin/dashboard/summary` | Dashboard summary counts (document count per client; Super Admin: all clients, or `?client_id=`) |
 | `GET` | `/api/v1/admin/audit-log` | Recent admin audit log entries (admin) |
 | `GET` | `/api/v1/booking/availability` | Available booking slots for a date |
 | `POST` | `/api/v1/booking` | Create a booking (name, phone, email, slot) |
@@ -122,31 +120,45 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ### Manage the knowledge base
 
-These routes need a signed-in Super Admin or Admin. Sign in once and reuse the cookie:
+These routes need a signed-in Super Admin or Admin. An Admin always works on their own client; a Super Admin adds `?client_id=<client uuid>` (listed by `GET /api/v1/admin/clients`). Sign in once and reuse the cookie:
 
 ```bash
-curl -c cookies.txt -X POST http://localhost:8000/api/v1/auth/login \n  -H "Content-Type: application/json" \n  -d '{"email": "you@example.com", "password": "..."}'
+curl -c cookies.txt -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "you@example.com", "password": "..."}'
 ```
 
-List what is indexed:
+List a client's documents (status `processing`, `ready` or `failed`, chunk count, size):
 
 ```bash
-curl -b cookies.txt http://localhost:8000/api/v1/documents
+curl -b cookies.txt "http://localhost:8000/api/v1/admin/documents?client_id=<client uuid>"
 ```
 
-Remove one file:
+Upload, then remove one document:
 
 ```bash
-curl -b cookies.txt -X DELETE "http://localhost:8000/api/v1/documents?filename=faq.md"
+curl -b cookies.txt -F "file=@faq.md" \
+  "http://localhost:8000/api/v1/admin/documents/upload?client_id=<client uuid>"
+
+curl -b cookies.txt -X DELETE \
+  "http://localhost:8000/api/v1/admin/documents/<document id>?client_id=<client uuid>"
 ```
 
-Clear everything:
-
-```bash
-curl -b cookies.txt -X DELETE "http://localhost:8000/api/v1/documents?all=true"
-```
+There is no "delete everything" route any more: documents are removed one at a time, inside one client.
 
 > These endpoints are for operators/admins and require sign-in. Website visitors only use the chat widget.
+
+### Documents from before per-client documents
+
+Documents indexed before migration 0005 have no client, so the chatbot ignores them and the Documents page does not list them. Give them to one client (dry run first, then `--apply`):
+
+```bash
+cd backend
+.venv/Scripts/python ../scripts/assign_documents_to_client.py --client <slug>
+.venv/Scripts/python ../scripts/assign_documents_to_client.py --client <slug> --apply
+```
+
+It creates their `knowledge_sources` rows, tags the chunks and moves the stored files to the per-client folders. Pass `--upload-dir` and `--cache-dir` when the worker's `UPLOAD_DIR` and `DOCLING_CACHE_DIR` are not the local defaults. Uploading the files again on the Documents page works too.
 
 ## Google Calendar OAuth (Phase B1)
 
@@ -281,18 +293,20 @@ If calendar is not connected, the slot picker shows the API error (503). FAQ que
 
 ## Embed on your company website
 
-Use the **frontend embed URL**, not the API URL.
+Use the **frontend embed URL**, not the API URL. Each client has its own: add the client's slug as `?client=`.
 
 | Environment | Embed URL |
 |-------------|-----------|
-| Local dev | `http://localhost:3000/embed` |
-| Production | `https://<your-chat-host>/embed` |
+| Local dev | `http://localhost:3000/embed?client=<slug>` |
+| Production | `https://<your-chat-host>/embed?client=<slug>` |
 
-Example: if you deploy the Next.js app to `https://chat.yourcompany.com`, embed:
+The widget answers only from that client's documents. An unknown or suspended client shows "This assistant is not available". Restricting which websites may embed a client's widget (allowed domains) is not built yet.
+
+Example: if you deploy the Next.js app to `https://chat.yourcompany.com` and the client's slug is `smile-dental`, embed:
 
 ```html
 <iframe
-  src="https://chat.yourcompany.com/embed"
+  src="https://chat.yourcompany.com/embed?client=smile-dental"
   width="400"
   height="600"
   style="border: none; border-radius: 12px;"
@@ -393,7 +407,7 @@ curl -b cookies.txt \
 
 ### Knowledge base (`/admin/documents`)
 
-After signing in, open **Documents** in the sidebar to upload PDFs, DOCX, Markdown, and other supported files, view chunk counts, reindex a document, or delete it from Qdrant. Uploads use the same Docling → LlamaIndex worker pipeline as the public ingest API.
+After signing in, open **Documents** in the sidebar to upload PDF, Word, PowerPoint, HTML, Markdown or text files (up to 10 MB each), see each file's size, status and chunk count, reindex a document, or delete it. Documents are per client: an Admin sees their own client's; a Super Admin chooses the client first. The same file can be uploaded once per client. A failed upload stays in the list as **Failed** with the reason, and uploading it again replaces it. Uploads go through the Docling → LlamaIndex worker.
 
 ```bash
 curl -b cookies.txt http://localhost:8000/api/v1/admin/documents
@@ -465,6 +479,18 @@ The database tests in `tests/integration/` (migrations, JWT login, roles, user m
 ```bash
 TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres pytest
 ```
+
+Worker tests (Docling, OpenAI and Qdrant are replaced by fakes or an in-memory Qdrant):
+
+```bash
+cd worker
+pip install -e ".[dev]"
+pytest
+```
+
+### Ingestion worker is internal
+
+The worker (port 8001) has no sign-in: it trusts the `client_id` the backend sends. Only the backend may reach it. `docker-compose.yml` publishes 8001 on the host for local debugging; do not publish it in production.
 
 ### Switch LLM provider
 

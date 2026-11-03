@@ -1,4 +1,4 @@
-"""Interactive terminal chat against the running API."""
+"""Interactive terminal chat against the running API, as a visitor of one client's widget."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ import httpx
 DEFAULT_API_URL = "http://localhost:8000"
 
 
-def chat_loop(api_url: str) -> int:
+def chat_loop(api_url: str, client_slug: str) -> int:
     thread_id: str | None = None
-    print("Public Docs Chatbot CLI (type 'exit' to quit)\n")
+    print(f"Public Docs Chatbot CLI for {client_slug!r} (type 'exit' to quit)\n")
 
     with httpx.Client(timeout=120.0) as client:
         while True:
@@ -28,7 +28,7 @@ def chat_loop(api_url: str) -> int:
                 print("Bye.")
                 return 0
 
-            payload: dict[str, str] = {"message": message}
+            payload: dict[str, str] = {"message": message, "client": client_slug}
             if thread_id:
                 payload["thread_id"] = thread_id
 
@@ -52,8 +52,9 @@ def chat_loop(api_url: str) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Chat with the public docs assistant")
     parser.add_argument("--api-url", default=DEFAULT_API_URL)
+    parser.add_argument("--client", required=True, help="Slug of the client whose assistant to use")
     args = parser.parse_args()
-    sys.exit(chat_loop(args.api_url))
+    sys.exit(chat_loop(args.api_url, args.client))
 
 
 if __name__ == "__main__":

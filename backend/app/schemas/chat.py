@@ -1,9 +1,15 @@
+from uuid import UUID
+
 from pydantic import BaseModel, Field
+
+from app.schemas.users import SLUG_PATTERN
 
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
-    thread_id: str | None = None
+    # Slug of the client whose widget this is (the embed URL's ?client=).
+    client: str = Field(..., min_length=2, max_length=100, pattern=SLUG_PATTERN)
+    thread_id: UUID | None = None
 
 
 class SourceCitation(BaseModel):

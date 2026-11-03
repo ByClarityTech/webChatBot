@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from llama_index.core import Settings as LlamaSettings
 from llama_index.core import VectorStoreIndex
+from llama_index.core.vector_stores import ExactMatchFilter, MetadataFilters
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
@@ -37,10 +38,26 @@ def get_vector_index(settings: Settings | None = None) -> VectorStoreIndex:
     return VectorStoreIndex.from_vector_store(vector_store)
 
 
-def retrieve_chunks(query: str, settings: Settings | None = None) -> list[RetrievedChunk]:
+# Chunks carry their owner under this payload key (worker/app/index_manager.py).
+CLIENT_ID_KEY = "client_id"
+
+
+def client_filters(client_id: str) -> MetadataFilters:
+    return MetadataFilters(filters=[ExactMatchFilter(key=CLIENT_ID_KEY, value=client_id)])
+
+
+def retrieve_chunks(
+    query: str, client_id: str, settings: Settings | None = None
+) -> list[RetrievedChunk]:
+    """Top matches among one client's chunks. There is no unfiltered search: chunks of other
+    clients, and old chunks without a client, are never returned."""
+    if not client_id:
+        raise ValueError("client_id is required for retrieval")
     cfg = settings or get_settings()
     index = get_vector_index(cfg)
-    retriever = index.as_retriever(similarity_top_k=cfg.rag_top_k)
+    retriever = index.as_retriever(
+        similarity_top_k=cfg.rag_top_k, filters=client_filters(client_id)
+    )
     nodes = retriever.retrieve(query)
 
     chunks: list[RetrievedChunk] = []

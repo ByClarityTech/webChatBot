@@ -45,6 +45,28 @@ export type ManagedClient = {
   updated_at: string;
 };
 
+export type DocumentStatus = "processing" | "ready" | "failed";
+
+/** One uploaded file of a client (GET /api/v1/admin/documents). */
+export type AdminDocument = {
+  id: string;
+  client_id: string;
+  filename: string;
+  file_type: string;
+  size_bytes: number;
+  status: DocumentStatus;
+  chunk_count: number;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AdminDocumentList = {
+  client_id: string;
+  documents: AdminDocument[];
+  total_chunks: number;
+};
+
 export type AuditEntry = {
   id: number;
   action: string;
@@ -209,6 +231,44 @@ export function updateClient(
     `/api/v1/admin/clients/${encodeURIComponent(clientId)}`,
     "PATCH",
     changes,
+  );
+}
+
+// ---------------------------------------------------------------- documents
+// Super Admins pass the client; Admins leave it out (always their own client).
+
+function withClient(path: string, clientId?: string): string {
+  return clientId ? `${path}?client_id=${encodeURIComponent(clientId)}` : path;
+}
+
+export function listDocuments(clientId?: string): Promise<AdminDocumentList> {
+  return adminJson<AdminDocumentList>(withClient("/api/v1/admin/documents", clientId));
+}
+
+export async function uploadDocument(file: File, clientId?: string): Promise<AdminDocument> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const response = await adminFetch(withClient("/api/v1/admin/documents/upload", clientId), {
+    method: "POST",
+    body: formData,
+  });
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+  return response.json() as Promise<AdminDocument>;
+}
+
+export async function deleteDocument(documentId: string, clientId?: string): Promise<void> {
+  await adminJson(
+    withClient(`/api/v1/admin/documents/${encodeURIComponent(documentId)}`, clientId),
+    "DELETE",
+  );
+}
+
+export function reindexDocument(documentId: string, clientId?: string): Promise<AdminDocument> {
+  return adminJson<AdminDocument>(
+    withClient(`/api/v1/admin/documents/${encodeURIComponent(documentId)}/reindex`, clientId),
+    "POST",
   );
 }
 

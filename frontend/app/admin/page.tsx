@@ -116,7 +116,9 @@ export default function AdminDashboardPage() {
       ) : summary ? (
         <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <SummaryCard
-            title="Indexed documents"
+            title={
+              user.user_type === "super_admin" ? "Indexed documents (all clients)" : "Indexed documents"
+            }
             value={String(summary.document_count)}
             href={canOpenDocuments ? "/admin/documents" : undefined}
             hint={canOpenDocuments ? "Open Documents to upload or remove files" : undefined}

@@ -185,7 +185,7 @@ npm run dev
 ```
 
 The Next.js application will be available at:
-- Chat Widget & Home: [http://localhost:3000](http://localhost:3000)
+- Chat for one client: `http://localhost:3000/?client=<slug>` (widget view: `http://localhost:3000/embed?client=<slug>`). Without `?client=` the page shows "This assistant is not available".
 - Admin Dashboard: [http://localhost:3000/admin](http://localhost:3000/admin)
 
 ---
@@ -198,18 +198,20 @@ Once all services are running:
 From the repository root (activate backend venv or use system python with `httpx` installed):
 ```powershell
 pip install httpx
-python scripts/seed_public_docs.py --email you@example.com
+python scripts/seed_public_docs.py --email you@example.com --client <slug>
 ```
-Seeding signs in as a Super Admin or Admin (create one with `scripts/create_super_admin.py`). The password is read from `SEED_ADMIN_PASSWORD` or prompted for.
+Documents belong to one client, so create the client on the **Clients** page first. Seeding signs in as a Super Admin or Admin (create one with `scripts/create_super_admin.py`); a Super Admin must pass `--client`, an Admin seeds their own client. The password is read from `SEED_ADMIN_PASSWORD` or prompted for.
+
+Documents uploaded before per-client documents have no client and are ignored by the chatbot. See "Documents from before per-client documents" in the README to give them to a client.
 
 ### 2. Test via CLI
 ```powershell
-python scripts/chat_cli.py
+python scripts/chat_cli.py --client <slug>
 ```
 
 ### 3. Test via API
 ```powershell
 curl -X POST http://localhost:8000/api/v1/chat `
   -H "Content-Type: application/json" `
-  -d '{"message": "What services do you offer?"}'
+  -d '{"message": "What services do you offer?", "client": "<slug>"}'
 ```

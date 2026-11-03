@@ -19,6 +19,8 @@ from app.db.init import run_migrations
 # Test modules here set `pytestmark = pytest.mark.integration` (a conftest-level pytestmark
 # does not apply to tests); the marker also turns off the root audit stub.
 TRUNCATE_TABLES = (
+    "chat_threads",
+    "knowledge_sources",
     "admin_audit_log",
     "users",
     "clients",

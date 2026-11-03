@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 
-import { sendMessage } from "@/lib/api";
+import { ChatUnavailableError, clientSlugFromUrl, sendMessage } from "@/lib/api";
 import { chatConfig } from "@/lib/chat-config";
 
 import { BookingForm } from "./booking-form";
@@ -13,12 +13,18 @@ type ChatMessage = {
   content: string;
 };
 
-const THREAD_STORAGE_KEY = "website-assistant-thread-id";
-const MESSAGES_STORAGE_KEY = "website-assistant-messages";
+// Per client, so two clients' widgets in one browser never share a conversation.
+function threadStorageKey(client: string): string {
+  return `website-assistant-thread-id:${client}`;
+}
 
-function loadStoredMessages(): ChatMessage[] {
+function messagesStorageKey(client: string): string {
+  return `website-assistant-messages:${client}`;
+}
+
+function loadStoredMessages(client: string): ChatMessage[] {
   try {
-    const raw = sessionStorage.getItem(MESSAGES_STORAGE_KEY);
+    const raw = sessionStorage.getItem(messagesStorageKey(client));
     if (!raw) {
       return [];
     }
@@ -55,40 +61,49 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [showBookingForm, setShowBookingForm] = useState(false);
+  // The client whose assistant this is, from the page URL (?client=...).
+  const [clientSlug, setClientSlug] = useState<string | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const prevMessageCountRef = useRef(0);
 
   useEffect(() => {
-    const storedThread = sessionStorage.getItem(THREAD_STORAGE_KEY);
-    if (storedThread) {
-      setThreadId(storedThread);
+    const slug = clientSlugFromUrl(window.location.search);
+    setClientSlug(slug);
+    if (!slug) {
+      setUnavailable(true);
+    } else {
+      const storedThread = sessionStorage.getItem(threadStorageKey(slug));
+      if (storedThread) {
+        setThreadId(storedThread);
+      }
+      setMessages(loadStoredMessages(slug));
     }
-    setMessages(loadStoredMessages());
     setHydrated(true);
   }, []);
 
   useEffect(() => {
-    if (!hydrated) {
+    if (!hydrated || !clientSlug) {
       return;
     }
     if (messages.length === 0) {
-      sessionStorage.removeItem(MESSAGES_STORAGE_KEY);
+      sessionStorage.removeItem(messagesStorageKey(clientSlug));
       return;
     }
-    sessionStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(messages));
-  }, [messages, hydrated]);
+    sessionStorage.setItem(messagesStorageKey(clientSlug), JSON.stringify(messages));
+  }, [messages, hydrated, clientSlug]);
 
   useEffect(() => {
-    if (!hydrated) {
+    if (!hydrated || !clientSlug) {
       return;
     }
     if (threadId) {
-      sessionStorage.setItem(THREAD_STORAGE_KEY, threadId);
+      sessionStorage.setItem(threadStorageKey(clientSlug), threadId);
     } else {
-      sessionStorage.removeItem(THREAD_STORAGE_KEY);
+      sessionStorage.removeItem(threadStorageKey(clientSlug));
     }
-  }, [threadId, hydrated]);
+  }, [threadId, hydrated, clientSlug]);
 
   useEffect(() => {
     const container = messagesContainerRef.current;
@@ -115,7 +130,7 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
 
   async function sendUserMessage(text: string) {
     const trimmed = text.trim();
-    if (!trimmed || loading) {
+    if (!trimmed || loading || !clientSlug) {
       return;
     }
 
@@ -128,7 +143,7 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
     ]);
 
     try {
-      const response = await sendMessage(trimmed, threadId);
+      const response = await sendMessage(trimmed, clientSlug, threadId);
       setThreadId(response.thread_id);
       setMessages((current) => [
         ...current,
@@ -142,6 +157,10 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
         setShowBookingForm(true);
       }
     } catch (submitError) {
+      if (submitError instanceof ChatUnavailableError) {
+        setUnavailable(true);
+        return;
+      }
       setError(submitError instanceof Error ? submitError.message : "Something went wrong");
     } finally {
       setLoading(false);
@@ -155,6 +174,23 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
 
   const showHeader = Boolean(chatConfig.title || chatConfig.subtitle);
   const isEmpty = messages.length === 0 && !loading;
+
+  if (unavailable) {
+    // No or unknown client, or the client is suspended: nothing to chat with.
+    return (
+      <div
+        className={
+          isEmbed
+            ? "flex h-full min-h-0 flex-col items-center justify-center bg-white p-6"
+            : "flex h-[min(640px,80vh)] flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+        }
+      >
+        <p className="text-center text-sm text-slate-500" role="status">
+          This assistant is not available.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div

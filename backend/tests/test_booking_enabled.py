@@ -1,4 +1,6 @@
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -13,6 +15,7 @@ from app.agents.public.nodes.booking_intent import (
 from app.agents.public.state import PublicAssistantState
 from app.api.routes import booking
 from app.api.routes.booking import BOOKING_DISABLED_DETAIL
+from app.db.models.client import ClientRecord
 
 
 def _base_state() -> PublicAssistantState:
@@ -20,6 +23,7 @@ def _base_state() -> PublicAssistantState:
         "messages": [HumanMessage(content="I want to book a demo call")],
         "retrieved_docs": [],
         "thread_id": "test-thread",
+        "client_id": "test-client",
         "intent": "booking",
         "booking_action": None,
     }
@@ -89,8 +93,23 @@ async def test_create_booking_returns_503_when_booking_disabled(booking_app):
 
 
 @pytest.mark.asyncio
-async def test_chat_booking_message_no_action_when_disabled():
+async def test_chat_booking_message_no_action_when_disabled(monkeypatch):
     from app.api.routes.chat import router
+
+    client_record = ClientRecord(
+        id=uuid4(),
+        name="Example",
+        slug="example",
+        status="active",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    monkeypatch.setattr(
+        "app.api.routes.chat.get_client_by_slug", AsyncMock(return_value=client_record)
+    )
+    monkeypatch.setattr(
+        "app.api.routes.chat.claim_chat_thread", AsyncMock(return_value=client_record.id)
+    )
 
     test_app = FastAPI()
     mock_graph = MagicMock()
@@ -109,7 +128,7 @@ async def test_chat_booking_message_no_action_when_disabled():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/api/v1/chat",
-            json={"message": "I want to book a meeting"},
+            json={"message": "I want to book a meeting", "client": "example"},
         )
 
     assert response.status_code == 200

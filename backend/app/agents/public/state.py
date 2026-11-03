@@ -8,5 +8,7 @@ class PublicAssistantState(TypedDict):
     messages: Annotated[list, add_messages]
     retrieved_docs: list[dict]
     thread_id: str
+    # The client whose widget the visitor is on; retrieval searches only its documents.
+    client_id: str
     intent: str | None
     booking_action: str | None

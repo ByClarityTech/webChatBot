@@ -3,6 +3,8 @@ import uuid
 from fastapi import APIRouter, HTTPException, Request, status
 from langchain_core.messages import AIMessage, HumanMessage
 
+from app.db.models.chat_thread import claim_chat_thread
+from app.db.models.client import ClientRecord, get_client_by_slug
 from app.schemas.chat import ChatRequest, ChatResponse, SourceCitation
 
 router = APIRouter(tags=["chat"])
@@ -12,11 +14,32 @@ EMPTY_KB_MESSAGE = (
     "Please upload content through the documents ingest API first."
 )
 
+# Same answer for an unknown and a suspended client, so slugs of suspended clients are not
+# confirmed.
+NOT_AVAILABLE_MESSAGE = "This assistant is not available"
+
+
+async def _active_client(slug: str) -> ClientRecord:
+    client = await get_client_by_slug(slug)
+    if client is None or client.status != "active":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_AVAILABLE_MESSAGE)
+    return client
+
+
+async def _thread_for_client(thread_id: uuid.UUID | None, client: ClientRecord) -> uuid.UUID:
+    """The visitor's thread, or a new one when there is none or it belongs to another client."""
+    if thread_id is not None and await claim_chat_thread(thread_id, client.id) == client.id:
+        return thread_id
+    new_thread_id = uuid.uuid4()
+    await claim_chat_thread(new_thread_id, client.id)
+    return new_thread_id
+
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
     graph = request.app.state.agent_graph
-    thread_id = request_body.thread_id or str(uuid.uuid4())
+    client = await _active_client(request_body.client)
+    thread_id = str(await _thread_for_client(request_body.thread_id, client))
 
     try:
         result = await graph.ainvoke(
@@ -24,6 +47,7 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
                 "messages": [HumanMessage(content=request_body.message.strip())],
                 "retrieved_docs": [],
                 "thread_id": thread_id,
+                "client_id": str(client.id),
                 "intent": None,
                 "booking_action": None,
             },

@@ -6,7 +6,6 @@ from auth_helpers import signed_in, signed_out
 from fastapi import APIRouter, FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from app.api.routes import documents as legacy_documents
 from app.api.routes.admin import (
     audit_log,
     bookings,
@@ -44,7 +43,6 @@ def full_admin_app():
         google_oauth,
         settings,
         users,
-        legacy_documents,
     ):
         test_app.include_router(module.router, prefix="/api/v1")
     return test_app
@@ -54,7 +52,7 @@ def full_admin_app():
 
 
 def test_area_access_matches_role_decisions():
-    """Decision 7, plus dashboard for every role and legacy documents like admin documents."""
+    """Decision 7, plus dashboard for every role."""
     expected = {
         Area.dashboard: {SA, ADMIN, SUPPORT},
         Area.documents: {SA, ADMIN},
@@ -74,8 +72,8 @@ def test_area_access_matches_role_decisions():
 ADMIN_ENDPOINTS = [
     ("GET", "/api/v1/admin/dashboard/summary"),
     ("GET", "/api/v1/admin/documents"),
-    ("DELETE", "/api/v1/admin/documents/abc"),
-    ("POST", "/api/v1/admin/documents/abc/reindex"),
+    ("DELETE", "/api/v1/admin/documents/00000000-0000-0000-0000-000000000000"),
+    ("POST", "/api/v1/admin/documents/00000000-0000-0000-0000-000000000000/reindex"),
     ("GET", "/api/v1/admin/google/oauth/start"),
     ("GET", "/api/v1/admin/google/oauth/status"),
     ("DELETE", "/api/v1/admin/google/oauth/disconnect"),
@@ -84,8 +82,6 @@ ADMIN_ENDPOINTS = [
     ("GET", "/api/v1/admin/bookings/00000000-0000-0000-0000-000000000000"),
     ("PATCH", "/api/v1/admin/bookings/00000000-0000-0000-0000-000000000000"),
     ("GET", "/api/v1/admin/audit-log"),
-    ("GET", "/api/v1/documents"),
-    ("DELETE", "/api/v1/documents?all=true"),
     ("GET", "/api/v1/admin/users"),
     ("POST", "/api/v1/admin/users"),
     ("GET", "/api/v1/admin/users/00000000-0000-0000-0000-000000000000"),
@@ -110,11 +106,9 @@ async def test_every_admin_endpoint_requires_sign_in(full_admin_app, method, pat
 
 SUPPORT_FORBIDDEN = [
     ("GET", "/api/v1/admin/documents"),
-    ("DELETE", "/api/v1/admin/documents/abc"),
-    ("POST", "/api/v1/admin/documents/abc/reindex"),
+    ("DELETE", "/api/v1/admin/documents/00000000-0000-0000-0000-000000000000"),
+    ("POST", "/api/v1/admin/documents/00000000-0000-0000-0000-000000000000/reindex"),
     ("GET", "/api/v1/admin/audit-log"),
-    ("GET", "/api/v1/documents"),
-    ("DELETE", "/api/v1/documents?all=true"),
     ("GET", "/api/v1/admin/users"),
     ("POST", "/api/v1/admin/users"),
     ("GET", "/api/v1/admin/clients"),
@@ -289,7 +283,7 @@ def csrf_app():
     test_app.add_middleware(
         CSRFOriginMiddleware,
         allowed_origins=["http://localhost:3000"],
-        protected_prefixes=("/api/v1/admin", "/api/v1/auth", "/api/v1/documents"),
+        protected_prefixes=("/api/v1/admin", "/api/v1/auth"),
     )
     return test_app
 

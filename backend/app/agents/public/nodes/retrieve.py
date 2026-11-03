@@ -15,7 +15,7 @@ def retrieve_node(state: PublicAssistantState) -> dict:
                 last_user_message = str(content)
             break
 
-    chunks = retrieve_chunks(last_user_message)
+    chunks = retrieve_chunks(last_user_message, client_id=state["client_id"])
     retrieved_docs = [
         {
             "text": chunk.text,
