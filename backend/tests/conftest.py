@@ -27,6 +27,9 @@ TEST_ENV = {
     "GOOGLE_CLIENT_SECRET": "",
     "GOOGLE_TOKEN_ENCRYPTION_KEY": "",
     "ALLOWED_ORIGINS": "http://localhost:3000,http://localhost:8000",
+    # Test-only signing key, never used anywhere else.
+    "JWT_SECRET": "test-jwt-secret-" + "x" * 32,
+    "JWT_TTL_HOURS": "24",
 }
 os.environ.update(TEST_ENV)
 

@@ -20,13 +20,15 @@ class UserRecord:
     client_name: str | None
     client_slug: str | None
     client_status: str | None
+    # JWTs issued before this moment are refused (deactivation, password resets).
+    tokens_valid_after: datetime | None = None
 
 
-# Column order must match _row_to_record. Shared with user_session.py.
+# Column order must match row_to_user.
 USER_COLUMNS = """
     u.id, u.client_id, u.user_type_id, t.code, u.email, u.password_hash,
     u.full_name, u.is_active, u.last_login_at, u.created_at,
-    c.name, c.slug, c.status
+    c.name, c.slug, c.status, u.tokens_valid_after
 """
 
 USER_JOINS = """
@@ -51,6 +53,7 @@ def row_to_user(row: tuple) -> UserRecord:
         client_name=row[10],
         client_slug=row[11],
         client_status=row[12],
+        tokens_valid_after=row[13],
     )
 
 
@@ -122,6 +125,7 @@ async def update_user(
     full_name: str | None = None,
     is_active: bool | None = None,
     password_hash: str | None = None,
+    tokens_valid_after: datetime | None = None,
 ) -> UserRecord | None:
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
@@ -131,10 +135,11 @@ async def update_user(
                 SET full_name = COALESCE(%s, full_name),
                     is_active = COALESCE(%s, is_active),
                     password_hash = COALESCE(%s, password_hash),
+                    tokens_valid_after = COALESCE(%s, tokens_valid_after),
                     updated_at = NOW()
                 WHERE id = %s
                 """,
-                (full_name, is_active, password_hash, user_id),
+                (full_name, is_active, password_hash, tokens_valid_after, user_id),
             )
         await conn.commit()
     return await get_user_by_id(user_id)

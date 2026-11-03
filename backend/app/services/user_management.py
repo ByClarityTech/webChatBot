@@ -14,8 +14,8 @@ import psycopg
 from app.core.roles import USER_TYPE_IDS, UserType
 from app.core.security import (
     hash_password,
-    hash_session_token,
     password_problem,
+    token_cutoff_now,
     verify_password,
 )
 from app.db.models.client import (
@@ -26,7 +26,6 @@ from app.db.models.client import (
     update_client,
 )
 from app.db.models.user import UserRecord, get_user_by_id, insert_user, list_users, update_user
-from app.db.models.user_session import revoke_all_user_sessions
 
 SUPER_ADMIN = UserType.super_admin.value
 ADMIN = UserType.admin.value
@@ -198,32 +197,33 @@ async def change_user(
         _check_password(password, email=target.email)
         new_hash = hash_password(password)
 
+    # Deactivation or a password reset ends every token the user already has. (Inactive
+    # users are refused anyway; the cutoff also keeps old tokens dead after reactivation.)
+    cutoff = token_cutoff_now() if is_active is False or new_hash is not None else None
     updated = await update_user(
         target.id,
         full_name=full_name.strip() if full_name is not None else None,
         is_active=is_active,
         password_hash=new_hash,
+        tokens_valid_after=cutoff,
     )
     if updated is None:
         raise NotFoundError("User not found")
-    # Deactivation or a password reset signs the user out everywhere.
-    if is_active is False or new_hash is not None:
-        await revoke_all_user_sessions(target.id)
     return updated
 
 
 async def change_own_password(
     user: UserRecord,
     *,
-    session_token: str,
     current_password: str,
     new_password: str,
 ) -> None:
+    """Ends all of the user's existing tokens; the caller issues a fresh one for this browser."""
     if not verify_password(current_password, user.password_hash):
         raise InvalidInputError("Current password is incorrect")
     if new_password == current_password:
         raise InvalidInputError("New password must be different from the current one")
     _check_password(new_password, email=user.email)
-    await update_user(user.id, password_hash=hash_password(new_password))
-    # Keep this browser signed in; end every other session.
-    await revoke_all_user_sessions(user.id, keep_token_hash=hash_session_token(session_token))
+    await update_user(
+        user.id, password_hash=hash_password(new_password), tokens_valid_after=token_cutoff_now()
+    )

@@ -29,7 +29,7 @@ from email_validator import EmailNotValidError, validate_email  # noqa: E402
 
 from app.core.config import get_settings  # noqa: E402
 from app.core.roles import USER_TYPE_IDS, UserType  # noqa: E402
-from app.core.security import hash_password, password_problem  # noqa: E402
+from app.core.security import hash_password, password_problem, token_cutoff_now  # noqa: E402
 from app.db.init import run_migrations  # noqa: E402
 
 SUPER_ADMIN_ID = USER_TYPE_IDS[UserType.super_admin]
@@ -86,19 +86,17 @@ def reset_password(conn: psycopg.Connection, email: str) -> None:
     if user_type_id != SUPER_ADMIN_ID:
         sys.exit("That user is not a Super Admin. Reset other users' passwords in the admin app.")
     password = read_password(email)
+    # tokens_valid_after ends every login token issued before now.
     conn.execute(
         """
-        UPDATE users SET password_hash = %s, is_active = TRUE, updated_at = NOW()
+        UPDATE users
+        SET password_hash = %s, is_active = TRUE, tokens_valid_after = %s, updated_at = NOW()
         WHERE id = %s
         """,
-        (hash_password(password), user_id),
-    )
-    conn.execute(
-        "UPDATE user_sessions SET revoked_at = NOW() WHERE user_id = %s AND revoked_at IS NULL",
-        (user_id,),
+        (hash_password(password), token_cutoff_now(), user_id),
     )
     audit(conn, "super_admin.password_reset", user_id)
-    print(f"Password reset for {email}; the account is active and all its sessions are signed out.")
+    print(f"Password reset for {email}; the account is active and signed out everywhere.")
 
 
 def main() -> None:

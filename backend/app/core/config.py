@@ -71,9 +71,12 @@ class Settings(BaseSettings):
 
     admin_frontend_url: str = "http://localhost:3000"
 
-    # Admin app login (email + password, server-side sessions in an httpOnly cookie)
+    # Admin app login (email + password). The browser holds a signed JWT (HS256) in an
+    # httpOnly cookie; each request still loads the user, so deactivation and password
+    # resets take effect at once (users.tokens_valid_after).
     session_cookie_name: str = "webchatbot_session"
-    session_ttl_hours: int = 8
+    jwt_secret: str = ""
+    jwt_ttl_hours: int = 24
     # None = Secure only when APP_ENV=production (local dev runs on plain http://localhost)
     session_cookie_secure: bool | None = None
     login_max_failed_attempts: int = 5

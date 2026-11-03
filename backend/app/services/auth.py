@@ -1,32 +1,30 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
+from uuid import UUID
 
 from app.core.config import get_settings
 from app.core.roles import UserType
 from app.core.security import (
+    TokenError,
     burn_password_check,
+    create_access_token,
+    decode_access_token,
     hash_password,
-    hash_session_token,
-    new_session_token,
     password_needs_rehash,
     verify_password,
 )
-from app.db.models.user import UserRecord, get_user_by_email, record_successful_login
-from app.db.models.user_session import (
-    get_active_session,
-    insert_user_session,
-    revoke_user_session,
-    touch_user_session,
+from app.db.models.user import (
+    UserRecord,
+    get_user_by_email,
+    get_user_by_id,
+    record_successful_login,
 )
 
 logger = logging.getLogger(__name__)
 
-# Avoid a DB write on every request; last_seen_at is only refreshed this often.
-_TOUCH_INTERVAL = timedelta(minutes=1)
-
 
 def is_user_allowed(user: UserRecord) -> bool:
-    """Inactive users and users of suspended clients cannot log in or keep a session."""
+    """Inactive users and users of suspended clients cannot log in or use a token."""
     if not user.is_active:
         return False
     if user.user_type_code == UserType.super_admin.value:
@@ -50,28 +48,30 @@ async def authenticate(email: str, password: str) -> UserRecord | None:
     return user
 
 
-async def start_session(user: UserRecord, *, client_ip: str | None, user_agent: str | None) -> str:
-    """Create a session row and return the raw token for the cookie (only its hash is stored)."""
+def issue_token(user: UserRecord) -> str:
+    """Signed JWT for the cookie. Raises TokenConfigError if JWT_SECRET is unusable."""
     settings = get_settings()
-    token = new_session_token()
-    await insert_user_session(
-        user_id=user.id,
-        token_hash=hash_session_token(token),
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.session_ttl_hours),
-        client_ip=client_ip,
-        user_agent=user_agent,
+    return create_access_token(
+        user.id, secret=settings.jwt_secret, ttl=timedelta(hours=settings.jwt_ttl_hours)
     )
-    return token
 
 
-async def resolve_session(token: str) -> UserRecord | None:
-    session = await get_active_session(hash_session_token(token))
-    if session is None or not is_user_allowed(session.user):
+async def resolve_token(token: str) -> UserRecord | None:
+    """The user a valid token belongs to, or None.
+
+    Signature and expiry are checked first; then the user is loaded, so deactivation,
+    client suspension and tokens_valid_after (password resets) apply immediately.
+    """
+    try:
+        claims = decode_access_token(token, secret=get_settings().jwt_secret)
+        user_id = UUID(claims["sub"])
+    except (TokenError, ValueError):
         return None
-    if datetime.now(timezone.utc) - session.last_seen_at > _TOUCH_INTERVAL:
-        await touch_user_session(session.session_id)
-    return session.user
-
-
-async def end_session(token: str) -> None:
-    await revoke_user_session(hash_session_token(token))
+    user = await get_user_by_id(user_id)
+    if user is None or not is_user_allowed(user):
+        return None
+    if user.tokens_valid_after is not None and claims["iat"] < int(
+        user.tokens_valid_after.timestamp()
+    ):
+        return None
+    return user

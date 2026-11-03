@@ -20,7 +20,6 @@ from app.db.init import run_migrations
 # does not apply to tests); the marker also turns off the root audit stub.
 TRUNCATE_TABLES = (
     "admin_audit_log",
-    "user_sessions",
     "users",
     "clients",
     "bookings",

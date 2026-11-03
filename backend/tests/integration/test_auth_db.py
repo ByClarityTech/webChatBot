@@ -1,6 +1,7 @@
 """End-to-end auth against a real database: migrations, login, roles, user management, audit,
 and the create_super_admin script."""
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -13,8 +14,9 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api.routes import auth
 from app.api.routes.admin import audit_log, clients, settings, users
+from app.core.config import get_settings
 from app.core.rate_limit import reset_login_failure_limiter
-from app.core.security import hash_password, hash_session_token
+from app.core.security import decode_access_token, hash_password
 from app.db.init import alembic_config
 
 pytestmark = pytest.mark.integration
@@ -106,31 +108,70 @@ def test_migrations_downgrade_and_upgrade_cleanly(database_url, db):
     }
     assert not tables & {"users", "clients", "user_types", "user_sessions"}
     command.upgrade(config, "head")
-    assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0002_auth_tables"
+    assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0003_jwt_auth"
+    tables = {
+        r[0] for r in db.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+    }
+    assert "user_sessions" not in tables, "JWT login keeps no session table"
 
 
-# ---------------------------------------------------------------- sessions
+# ---------------------------------------------------------------- JWT login
 
 
-async def test_login_me_logout_and_token_storage(app, db):
-    add_super_admin(db)
+def with_cookie(app, token):
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"webchatbot_session": token},
+    )
+
+
+async def test_login_sets_a_jwt_and_logout_clears_the_cookie(app, db):
+    user_id = add_super_admin(db)
     async with browser(app) as b:
         assert await login(b, "ROOT@example.com") == 200
         assert (await b.get("/api/v1/auth/me")).json()["user_type"] == "super_admin"
         token = b.cookies.get("webchatbot_session")
-        stored = db.execute("SELECT token_hash FROM user_sessions").fetchall()
-        assert stored == [(hash_session_token(token),)]
+        claims = decode_access_token(token, secret=get_settings().jwt_secret)
+        assert claims["sub"] == str(user_id) and claims["exp"] - claims["iat"] == 24 * 3600
         assert db.execute("SELECT last_login_at FROM users").fetchone()[0] is not None
         assert (await b.post("/api/v1/auth/logout")).status_code == 200
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-        cookies={"webchatbot_session": token},
-    ) as old:
-        assert (await old.get("/api/v1/auth/me")).status_code == 401
+        assert (await b.get("/api/v1/auth/me")).status_code == 401, "this browser is signed out"
+    # Agreed trade-off: no session table, so a copied token works until it expires.
+    async with with_cookie(app, token) as copied:
+        assert (await copied.get("/api/v1/auth/me")).status_code == 200
 
 
-async def test_expired_session_and_suspended_client_end_access(app, db):
+async def test_admin_password_reset_ends_every_existing_token(app, db):
+    add_super_admin(db)
+    client_id = db.execute(
+        "INSERT INTO clients (name, slug) VALUES ('A', 'a') RETURNING id"
+    ).fetchone()[0]
+    target_id = db.execute(
+        "INSERT INTO users (client_id, user_type_id, email, password_hash, full_name) "
+        "VALUES (%s, 3, 'help@a.com', %s, 'H') RETURNING id",
+        (client_id, hash_password(PW)),
+    ).fetchone()[0]
+    async with browser(app) as support, browser(app) as sa:
+        await login(support, "help@a.com")
+        token = support.cookies.get("webchatbot_session")
+        # Let a second pass: a token issued in the cutoff's own second is still accepted.
+        await asyncio.sleep(1.1)
+        await login(sa, "root@example.com")
+        r = await sa.patch(
+            f"/api/v1/admin/users/{target_id}", json={"password": "Reset-pass-12345"}
+        )
+        assert r.status_code == 200
+        assert (await support.get("/api/v1/auth/me")).status_code == 401
+    async with with_cookie(app, token) as copied:
+        assert (await copied.get("/api/v1/auth/me")).status_code == 401, "copies die too"
+    assert (
+        db.execute("SELECT tokens_valid_after FROM users WHERE id = %s", (target_id,)).fetchone()[0]
+        is not None
+    )
+
+
+async def test_suspension_and_deactivation_end_access_at_once(app, db):
     client_id = db.execute(
         "INSERT INTO clients (name, slug) VALUES ('A', 'a') RETURNING id"
     ).fetchone()[0]
@@ -145,8 +186,9 @@ async def test_expired_session_and_suspended_client_end_access(app, db):
         assert (await b.get("/api/v1/auth/me")).status_code == 401
         db.execute("UPDATE clients SET status = 'active'")
         assert (await b.get("/api/v1/auth/me")).status_code == 200
-        db.execute("UPDATE user_sessions SET expires_at = NOW() - INTERVAL '1 minute'")
+        db.execute("UPDATE users SET is_active = FALSE")
         assert (await b.get("/api/v1/auth/me")).status_code == 401
+        db.execute("UPDATE users SET is_active = TRUE")
         db.execute("UPDATE clients SET status = 'suspended'")
         assert await login(b, "admin@a.com") == 401
 
@@ -245,6 +287,8 @@ async def test_own_password_change_signs_out_other_sessions(app, db):
     async with browser(app) as a, browser(app) as b:
         await login(a, "root@example.com")
         await login(b, "root@example.com")
+        # Let a second pass: a token issued in the cutoff's own second is still accepted.
+        await asyncio.sleep(1.1)
         r = await a.post(
             "/api/v1/auth/password",
             json={"current_password": PW, "new_password": "Brand-new-pass-1"},

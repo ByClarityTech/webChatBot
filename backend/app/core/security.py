@@ -1,7 +1,9 @@
-import hashlib
 import secrets
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
+from uuid import UUID
 
+import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
@@ -49,9 +51,63 @@ def burn_password_check(password: str) -> None:
     verify_password(password, _dummy_hash())
 
 
-def new_session_token() -> str:
-    return secrets.token_urlsafe(32)
+# ---------------------------------------------------------------- JWT access tokens
+
+JWT_ALGORITHM = "HS256"
+JWT_ISSUER = "webchatbot-api"
+JWT_AUDIENCE = "webchatbot-admin"
+JWT_MIN_SECRET_LENGTH = 32
 
 
-def hash_session_token(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
+class TokenError(Exception):
+    """The token is missing, malformed, expired, or signed with another key."""
+
+
+class TokenConfigError(Exception):
+    """JWT_SECRET is not set or too short to be safe."""
+
+
+def checked_jwt_secret(secret: str) -> str:
+    if len(secret or "") < JWT_MIN_SECRET_LENGTH:
+        raise TokenConfigError(
+            f"JWT_SECRET must be set to at least {JWT_MIN_SECRET_LENGTH} random characters"
+        )
+    return secret
+
+
+def create_access_token(
+    user_id: UUID, *, secret: str, ttl: timedelta, now: datetime | None = None
+) -> str:
+    issued = (now or datetime.now(UTC)).replace(microsecond=0)
+    claims = {
+        "sub": str(user_id),
+        "iat": int(issued.timestamp()),
+        "exp": int((issued + ttl).timestamp()),
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
+    }
+    return jwt.encode(claims, checked_jwt_secret(secret), algorithm=JWT_ALGORITHM)
+
+
+def decode_access_token(token: str, *, secret: str) -> dict:
+    """Verified claims. Only HS256 is accepted, so a token can't pick a weaker algorithm."""
+    try:
+        return jwt.decode(
+            token,
+            checked_jwt_secret(secret),
+            algorithms=[JWT_ALGORITHM],
+            audience=JWT_AUDIENCE,
+            issuer=JWT_ISSUER,
+            options={"require": ["sub", "iat", "exp", "iss", "aud"]},
+        )
+    except jwt.PyJWTError as exc:
+        raise TokenError(str(exc)) from exc
+
+
+def token_cutoff_now() -> datetime:
+    """Value for users.tokens_valid_after: now, to the second (JWT iat has no fractions).
+
+    Tokens issued in an earlier second are refused; a token issued from now on is accepted.
+    Taken from the app's clock, the same clock that stamps iat.
+    """
+    return datetime.now(UTC).replace(microsecond=0)

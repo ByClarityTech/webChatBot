@@ -91,8 +91,8 @@ Open [http://localhost:3000](http://localhost:3000).
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/health` | Health check |
-| `POST` | `/api/v1/auth/login` | Admin sign-in (email + password); sets the session cookie |
-| `POST` | `/api/v1/auth/logout` | Ends the session |
+| `POST` | `/api/v1/auth/login` | Admin sign-in (email + password); sets the JWT cookie |
+| `POST` | `/api/v1/auth/logout` | Removes the JWT cookie from this browser |
 | `GET` | `/api/v1/auth/me` | Signed-in user, user type and client |
 | `POST` | `/api/v1/auth/password` | Change your own password (current password required) |
 | `GET` / `POST` | `/api/v1/admin/clients` | List or create clients (Super Admin) |
@@ -317,7 +317,7 @@ Leave `NEXT_PUBLIC_CHAT_TITLE` and `NEXT_PUBLIC_CHAT_SUBTITLE` empty for a clean
 
 ## Admin dashboard
 
-Admins sign in with email and password. The session lives in an `httpOnly` cookie (`webchatbot_session`, 8 hours by default, `SESSION_TTL_HOURS`); only a hash of the token is stored in Postgres (`user_sessions`).
+Admins sign in with email and password. The API answers with a signed JWT (HS256, `JWT_SECRET`, valid 24 hours by default via `JWT_TTL_HOURS`) in an `httpOnly` cookie (`webchatbot_session`), so page scripts cannot read it. Tokens are not stored: each request verifies the signature and expiry, then loads the user, so deactivating a user or suspending a client takes effect immediately, and a password reset ends every token issued before it (`users.tokens_valid_after`). Logout removes the cookie from that browser; a copied token would stay valid until it expires. `JWT_SECRET` is required (at least 32 random characters); changing it signs everyone out.
 
 There are three user types:
 
@@ -440,7 +440,7 @@ pytest
 
 Tests never read your `.env` files and never reach a real database, Qdrant, worker, LLM or Google: `tests/conftest.py` replaces those settings with unreachable addresses and records audit writes in memory.
 
-The database tests in `tests/integration/` (migrations, login and sessions, roles, user management, audit trail, `create_super_admin.py`) are skipped unless you point them at a PostgreSQL server where your user may create databases. They create a throwaway database, then drop it; the database named in the URL is not written to:
+The database tests in `tests/integration/` (migrations, JWT login, roles, user management, audit trail, `create_super_admin.py`) are skipped unless you point them at a PostgreSQL server where your user may create databases. They create a throwaway database, then drop it; the database named in the URL is not written to:
 
 ```bash
 TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres pytest

@@ -13,7 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from app.api.routes.admin import clients as clients_routes
 from app.api.routes.admin import users as users_routes
 from app.core.roles import UserType
-from app.core.security import hash_password, verify_password
+from app.core.security import hash_password, token_cutoff_now, verify_password
 from app.db.models.client import ClientRecord
 from app.services import user_management as um
 
@@ -211,9 +211,6 @@ async def _change(actor, target, **changes):
         patch(
             "app.services.user_management.update_user", new_callable=AsyncMock, return_value=target
         ) as update,
-        patch(
-            "app.services.user_management.revoke_all_user_sessions", new_callable=AsyncMock
-        ) as revoke,
     ):
         await um.change_user(
             actor,
@@ -222,28 +219,27 @@ async def _change(actor, target, **changes):
             is_active=changes.get("is_active"),
             password=changes.get("password"),
         )
-    return update, revoke
+    return update
 
 
 async def test_rename_does_not_sign_the_user_out():
     admin = make_user(ADMIN)
-    update, revoke = await _change(
-        admin, _same_client(admin, make_user(SUPPORT)), full_name=" New "
-    )
+    update = await _change(admin, _same_client(admin, make_user(SUPPORT)), full_name=" New ")
     assert update.await_args.kwargs["full_name"] == "New"
-    revoke.assert_not_awaited()
+    assert update.await_args.kwargs["tokens_valid_after"] is None
 
 
 @pytest.mark.parametrize("change", [{"is_active": False}, {"password": STRONG}])
-async def test_deactivation_or_password_reset_signs_the_user_out(change):
-    target = make_user(SUPPORT)
-    _, revoke = await _change(make_user(SA), target, **change)
-    revoke.assert_awaited_once_with(target.id)
+async def test_deactivation_or_password_reset_ends_existing_tokens(change):
+    before = token_cutoff_now()
+    update = await _change(make_user(SA), make_user(SUPPORT), **change)
+    cutoff = update.await_args.kwargs["tokens_valid_after"]
+    assert cutoff is not None and cutoff >= before and cutoff.microsecond == 0
 
 
-async def test_reactivation_does_not_revoke():
-    _, revoke = await _change(make_user(SA), make_user(SUPPORT), is_active=True)
-    revoke.assert_not_awaited()
+async def test_reactivation_does_not_move_the_cutoff():
+    update = await _change(make_user(SA), make_user(SUPPORT), is_active=True)
+    assert update.await_args.kwargs["tokens_valid_after"] is None
 
 
 async def test_change_user_hides_other_clients_and_forbids_admins():
@@ -256,23 +252,14 @@ async def test_change_user_hides_other_clients_and_forbids_admins():
         await _change(make_user(SA), make_user(SA), full_name="x")
 
 
-async def test_change_own_password_keeps_current_session():
+async def test_change_own_password_sets_hash_and_ends_older_tokens():
     user = make_user(ADMIN)
     user.password_hash = hash_password("Old-password-123")
-    with (
-        patch("app.services.user_management.update_user", new_callable=AsyncMock) as update,
-        patch(
-            "app.services.user_management.revoke_all_user_sessions", new_callable=AsyncMock
-        ) as revoke,
-    ):
-        await um.change_own_password(
-            user, session_token="tok", current_password="Old-password-123", new_password=STRONG
-        )
+    with patch("app.services.user_management.update_user", new_callable=AsyncMock) as update:
+        await um.change_own_password(user, current_password="Old-password-123", new_password=STRONG)
 
     assert verify_password(STRONG, update.await_args.kwargs["password_hash"])
-    from app.core.security import hash_session_token
-
-    revoke.assert_awaited_once_with(user.id, keep_token_hash=hash_session_token("tok"))
+    assert update.await_args.kwargs["tokens_valid_after"] is not None
 
 
 @pytest.mark.parametrize(
@@ -290,9 +277,7 @@ async def test_change_own_password_refusals(current, new, message):
         patch("app.services.user_management.update_user", new_callable=AsyncMock) as update,
         pytest.raises(um.InvalidInputError, match=message),
     ):
-        await um.change_own_password(
-            user, session_token="tok", current_password=current, new_password=new
-        )
+        await um.change_own_password(user, current_password=current, new_password=new)
     update.assert_not_awaited()
 
 

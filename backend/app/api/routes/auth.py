@@ -5,11 +5,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from app.api.deps.auth import get_current_user
 from app.core.config import get_settings
 from app.core.rate_limit import get_login_failure_limiter, login_failure_key
+from app.core.security import TokenConfigError, checked_jwt_secret
 from app.db.models.user import UserRecord
 from app.schemas.auth import ClientSummary, CurrentUserResponse, LoginRequest, LogoutResponse
 from app.schemas.users import ChangePasswordRequest
 from app.services.admin_audit import client_ip_from_request, log_admin_action
-from app.services.auth import authenticate, end_session, start_session
+from app.services.auth import authenticate, issue_token
 from app.services.user_management import InvalidInputError, change_own_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -43,8 +44,24 @@ def _cookie_options() -> dict:
     }
 
 
+def _set_token_cookie(response: Response, user: UserRecord) -> None:
+    response.set_cookie(
+        value=issue_token(user),
+        max_age=get_settings().jwt_ttl_hours * 3600,
+        **_cookie_options(),
+    )
+
+
 @router.post("/login", response_model=CurrentUserResponse)
 async def login(body: LoginRequest, request: Request, response: Response) -> CurrentUserResponse:
+    # Fail before checking the password if tokens can't be issued at all.
+    try:
+        checked_jwt_secret(get_settings().jwt_secret)
+    except TokenConfigError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
     client_ip = client_ip_from_request(request)
     limiter = get_login_failure_limiter()
     key = login_failure_key(body.email, client_ip)
@@ -63,24 +80,14 @@ async def login(body: LoginRequest, request: Request, response: Response) -> Cur
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_CREDENTIALS)
 
     limiter.clear(key)
-    token = await start_session(
-        user,
-        client_ip=client_ip,
-        user_agent=request.headers.get("user-agent"),
-    )
-    response.set_cookie(
-        value=token,
-        max_age=get_settings().session_ttl_hours * 3600,
-        **_cookie_options(),
-    )
+    _set_token_cookie(response, user)
     return to_current_user_response(user)
 
 
 @router.post("/logout", response_model=LogoutResponse)
-async def logout(request: Request, response: Response) -> LogoutResponse:
-    token = request.cookies.get(get_settings().session_cookie_name)
-    if token:
-        await end_session(token)
+async def logout(response: Response) -> LogoutResponse:
+    # Tokens are not stored, so logout removes the cookie from this browser. A copied token
+    # stays valid until it expires (JWT_TTL_HOURS) unless the user's tokens are cut off.
     response.delete_cookie(**_cookie_options())
     return LogoutResponse()
 
@@ -94,9 +101,10 @@ async def me(user: Annotated[UserRecord, Depends(get_current_user)]) -> CurrentU
 async def change_password(
     body: ChangePasswordRequest,
     request: Request,
+    response: Response,
     user: Annotated[UserRecord, Depends(get_current_user)],
 ) -> LogoutResponse:
-    """Change your own password. Other sessions of this user are signed out; this one stays."""
+    """Change your own password. All older tokens stop working; this browser gets a new one."""
     client_ip = client_ip_from_request(request)
     limiter = get_login_failure_limiter()
     # A wrong current password counts as a failed login, so this can't be used to guess it.
@@ -112,7 +120,6 @@ async def change_password(
     try:
         await change_own_password(
             user,
-            session_token=request.cookies.get(get_settings().session_cookie_name, ""),
             current_password=body.current_password,
             new_password=body.new_password,
         )
@@ -122,6 +129,7 @@ async def change_password(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     limiter.clear(key)
+    _set_token_cookie(response, user)
     await log_admin_action(
         "user.password_change", request=request, resource_type="user", resource_id=str(user.id)
     )
