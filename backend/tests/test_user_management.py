@@ -99,6 +99,7 @@ async def test_super_admin_creates_admin_in_chosen_client(created):
     row = created[0]
     assert row["client_id"] == client.id and row["user_type_id"] == 2
     assert row["email"] == "new.admin@acme.com" and row["full_name"] == "New Admin"
+    assert row["must_change_password"] is True, "admin-chosen password must be replaced"
     assert row["password_hash"].startswith("$argon2id$") and verify_password(
         STRONG, row["password_hash"]
     )
@@ -235,6 +236,8 @@ async def test_deactivation_or_password_reset_ends_existing_tokens(change):
     update = await _change(make_user(SA), make_user(SUPPORT), **change)
     cutoff = update.await_args.kwargs["tokens_valid_after"]
     assert cutoff is not None and cutoff >= before and cutoff.microsecond == 0
+    expected_flag = True if "password" in change else None
+    assert update.await_args.kwargs["must_change_password"] is expected_flag
 
 
 async def test_reactivation_does_not_move_the_cutoff():
@@ -260,6 +263,7 @@ async def test_change_own_password_sets_hash_and_ends_older_tokens():
 
     assert verify_password(STRONG, update.await_args.kwargs["password_hash"])
     assert update.await_args.kwargs["tokens_valid_after"] is not None
+    assert update.await_args.kwargs["must_change_password"] is False
 
 
 @pytest.mark.parametrize(
@@ -427,3 +431,9 @@ async def test_suspend_client_route_audits_against_that_client(admin_routes_app,
     assert [(r["action"], r["client_id"]) for r in audit_rows] == [
         ("client.suspend", client_record.id)
     ]
+
+
+async def test_rename_leaves_the_password_flag_alone():
+    admin = make_user(ADMIN)
+    update = await _change(admin, _same_client(admin, make_user(SUPPORT)), full_name="New")
+    assert update.await_args.kwargs["must_change_password"] is None

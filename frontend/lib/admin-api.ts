@@ -15,6 +15,46 @@ export type AdminUser = {
   full_name: string;
   user_type: UserType;
   client: AdminClient | null;
+  /** An admin set this user's password; they must choose their own before anything else. */
+  must_change_password: boolean;
+};
+
+/** A user as listed in user management (GET /api/v1/admin/users). */
+export type ManagedUser = {
+  id: string;
+  email: string;
+  full_name: string;
+  user_type: UserType;
+  client_id: string | null;
+  client_name: string | null;
+  is_active: boolean;
+  must_change_password: boolean;
+  last_login_at: string | null;
+  created_at: string;
+};
+
+export type ClientStatus = "active" | "suspended";
+
+export type ManagedClient = {
+  id: string;
+  name: string;
+  slug: string;
+  status: ClientStatus;
+  user_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AuditEntry = {
+  id: number;
+  action: string;
+  resource_type: string | null;
+  resource_id: string | null;
+  client_ip: string | null;
+  created_at: string;
+  user_id: string | null;
+  user_email: string | null;
+  client_id: string | null;
 };
 
 export class ApiError extends Error {
@@ -97,4 +137,87 @@ export async function adminFetch(path: string, options: RequestInit = {}): Promi
     window.location.assign(`${LOGIN_PATH}?expired=1`);
   }
   return response;
+}
+
+/** adminFetch + JSON body in and out; any non-2xx becomes an ApiError with the API's message. */
+async function adminJson<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+  const response = await adminFetch(path, {
+    method,
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+  return response.json() as Promise<T>;
+}
+
+// ---------------------------------------------------------------- own account
+
+export async function changeOwnPassword(currentPassword: string, newPassword: string): Promise<void> {
+  await adminJson("/api/v1/auth/password", "POST", {
+    current_password: currentPassword,
+    new_password: newPassword,
+  });
+}
+
+// ---------------------------------------------------------------- users
+
+export async function listUsers(clientId?: string): Promise<ManagedUser[]> {
+  const query = clientId ? `?client_id=${encodeURIComponent(clientId)}` : "";
+  return (await adminJson<{ users: ManagedUser[] }>(`/api/v1/admin/users${query}`)).users;
+}
+
+export type NewUser = {
+  email: string;
+  full_name: string;
+  password: string;
+  user_type: "admin" | "support";
+  /** Required for Super Admins; ignored for Admins (always their own client). */
+  client_id?: string;
+};
+
+export function createUser(user: NewUser): Promise<ManagedUser> {
+  return adminJson<ManagedUser>("/api/v1/admin/users", "POST", user);
+}
+
+export type UserChanges = {
+  full_name?: string;
+  is_active?: boolean;
+  password?: string;
+};
+
+export function updateUser(userId: string, changes: UserChanges): Promise<ManagedUser> {
+  return adminJson<ManagedUser>(`/api/v1/admin/users/${encodeURIComponent(userId)}`, "PATCH", changes);
+}
+
+// ---------------------------------------------------------------- clients (Super Admin)
+
+export async function listClients(): Promise<ManagedClient[]> {
+  return (await adminJson<{ clients: ManagedClient[] }>("/api/v1/admin/clients")).clients;
+}
+
+export function createClient(name: string, slug: string): Promise<ManagedClient> {
+  return adminJson<ManagedClient>("/api/v1/admin/clients", "POST", { name, slug });
+}
+
+export function updateClient(
+  clientId: string,
+  changes: { name?: string; status?: ClientStatus },
+): Promise<ManagedClient> {
+  return adminJson<ManagedClient>(
+    `/api/v1/admin/clients/${encodeURIComponent(clientId)}`,
+    "PATCH",
+    changes,
+  );
+}
+
+// ---------------------------------------------------------------- audit log
+
+export async function listAuditLog(options: { limit?: number; clientId?: string } = {}): Promise<AuditEntry[]> {
+  const params = new URLSearchParams({ limit: String(options.limit ?? 100) });
+  if (options.clientId) {
+    params.set("client_id", options.clientId);
+  }
+  return (await adminJson<{ entries: AuditEntry[] }>(`/api/v1/admin/audit-log?${params}`)).entries;
 }

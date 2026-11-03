@@ -56,6 +56,7 @@ class UserResponse(BaseModel):
     client_id: UUID | None
     client_name: str | None
     is_active: bool
+    must_change_password: bool
     last_login_at: datetime | None
     created_at: datetime
 

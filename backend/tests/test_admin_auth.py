@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -208,7 +208,7 @@ async def test_oauth_callback_without_auth_does_not_require_session(admin_app):
 
 @pytest.mark.asyncio
 async def test_oauth_status_refresh_failure_returns_refresh_error(admin_app):
-    expired = datetime.now(timezone.utc) - timedelta(minutes=5)
+    expired = datetime.now(UTC) - timedelta(minutes=5)
     record = MagicMock()
     record.calendar_id = "primary"
     record.token_expiry = expired
@@ -314,3 +314,18 @@ async def test_csrf_origin_check(csrf_app, method, path, headers, expected):
         response = await client.request(method, path, headers=headers)
 
     assert response.status_code == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("method", "path"), ADMIN_ENDPOINTS)
+async def test_admin_routes_are_blocked_until_an_admin_set_password_is_changed(
+    full_admin_app, method, path
+):
+    with signed_in(full_admin_app, SA) as user:
+        user.must_change_password = True
+        transport = ASGITransport(app=full_admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.request(method, path)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Password change required"

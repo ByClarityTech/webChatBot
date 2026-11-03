@@ -47,6 +47,7 @@ def to_user_response(user: UserRecord) -> UserResponse:
         client_id=user.client_id,
         client_name=user.client_name,
         is_active=user.is_active,
+        must_change_password=user.must_change_password,
         last_login_at=user.last_login_at,
         created_at=user.created_at,
     )

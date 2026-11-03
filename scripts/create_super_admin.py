@@ -86,11 +86,13 @@ def reset_password(conn: psycopg.Connection, email: str) -> None:
     if user_type_id != SUPER_ADMIN_ID:
         sys.exit("That user is not a Super Admin. Reset other users' passwords in the admin app.")
     password = read_password(email)
-    # tokens_valid_after ends every login token issued before now.
+    # tokens_valid_after ends every login token issued before now. The person running the
+    # script chose this password, so no forced change at next sign-in.
     conn.execute(
         """
         UPDATE users
-        SET password_hash = %s, is_active = TRUE, tokens_valid_after = %s, updated_at = NOW()
+        SET password_hash = %s, is_active = TRUE, tokens_valid_after = %s,
+            must_change_password = FALSE, updated_at = NOW()
         WHERE id = %s
         """,
         (hash_password(password), token_cutoff_now(), user_id),

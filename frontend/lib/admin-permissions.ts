@@ -34,6 +34,36 @@ export const USER_TYPE_LABELS: Record<UserType, string> = {
   support: "Support",
 };
 
+// User management rules; mirror backend/app/services/user_management.py so the UI only
+// shows actions the API will accept.
+
+type UserRef = { user_type: UserType; client_id: string | null };
+
+/** User types an actor may create. Super Admins are never created in the app. */
+export function creatableUserTypes(actor: UserType): ("admin" | "support")[] {
+  if (actor === "super_admin") {
+    return ["admin", "support"];
+  }
+  if (actor === "admin") {
+    return ["support"];
+  }
+  return [];
+}
+
+/** Rename, reset password, activate or deactivate. */
+export function canManageUser(actor: UserRef, target: UserRef): boolean {
+  if (target.user_type === "super_admin") {
+    return false;
+  }
+  if (actor.user_type === "super_admin") {
+    return true;
+  }
+  if (actor.user_type === "admin") {
+    return target.user_type === "support" && target.client_id === actor.client_id;
+  }
+  return false;
+}
+
 // Admin pages and the area each one needs. Longest prefix wins in areaForPath.
 export const ADMIN_PAGES: readonly { href: string; label: string; area: AdminArea }[] = [
   { href: "/admin", label: "Home", area: "dashboard" },
@@ -41,6 +71,9 @@ export const ADMIN_PAGES: readonly { href: string; label: string; area: AdminAre
   { href: "/admin/calendar", label: "Calendar", area: "calendar" },
   { href: "/admin/settings", label: "Settings", area: "business_hours" },
   { href: "/admin/bookings", label: "Bookings", area: "bookings" },
+  { href: "/admin/users", label: "Users", area: "users" },
+  { href: "/admin/clients", label: "Clients", area: "clients" },
+  { href: "/admin/audit-log", label: "Audit log", area: "audit_log" },
 ];
 
 export function areaForPath(pathname: string): AdminArea | null {

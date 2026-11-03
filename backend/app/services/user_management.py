@@ -172,6 +172,8 @@ async def create_user(
             user_type_id=USER_TYPE_IDS[UserType(user_type)],
             email=email,
             password_hash=hash_password(password),
+            # The admin chose this password; the user replaces it at first sign-in.
+            must_change_password=True,
             full_name=full_name,
         )
     except psycopg.errors.UniqueViolation as exc:
@@ -206,6 +208,8 @@ async def change_user(
         is_active=is_active,
         password_hash=new_hash,
         tokens_valid_after=cutoff,
+        # An admin-set password must be replaced by the user at their next sign-in.
+        must_change_password=True if new_hash is not None else None,
     )
     if updated is None:
         raise NotFoundError("User not found")
@@ -225,5 +229,8 @@ async def change_own_password(
         raise InvalidInputError("New password must be different from the current one")
     _check_password(new_password, email=user.email)
     await update_user(
-        user.id, password_hash=hash_password(new_password), tokens_valid_after=token_cutoff_now()
+        user.id,
+        password_hash=hash_password(new_password),
+        tokens_valid_after=token_cutoff_now(),
+        must_change_password=False,
     )

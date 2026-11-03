@@ -11,6 +11,7 @@ from app.services.auth import resolve_token
 
 NOT_AUTHENTICATED = "Not signed in or session expired"
 FORBIDDEN = "You do not have access to this area"
+PASSWORD_CHANGE_REQUIRED = "Password change required"
 LOGIN_NOT_CONFIGURED = "Login is not configured on this server (JWT_SECRET missing or too short)"
 
 
@@ -32,12 +33,20 @@ async def get_current_user(request: Request) -> UserRecord:
 
 
 def require_access(area: Area) -> Callable[..., Awaitable[UserRecord]]:
-    """Dependency: signed in (401 otherwise) and allowed into `area` (403 otherwise)."""
+    """Dependency: signed in (401 otherwise) and allowed into `area` (403 otherwise).
+
+    A user whose password was set by an admin gets 403 everywhere here until they
+    change it; /auth/me and /auth/password use get_current_user and stay open.
+    """
 
     async def dependency(
         request: Request,
         user: Annotated[UserRecord, Depends(get_current_user)],
     ) -> UserRecord:
+        if user.must_change_password:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=PASSWORD_CHANGE_REQUIRED
+            )
         if not can_access(user.user_type_code, area):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=FORBIDDEN)
         request.state.current_user = user

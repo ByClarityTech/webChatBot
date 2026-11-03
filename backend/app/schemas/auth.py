@@ -21,6 +21,8 @@ class CurrentUserResponse(BaseModel):
     full_name: str
     user_type: str
     client: ClientSummary | None = None
+    # True after an admin set the password: only /auth/me, /auth/password and logout work.
+    must_change_password: bool = False
 
 
 class LogoutResponse(BaseModel):

@@ -187,6 +187,35 @@ async def test_me_with_valid_session_returns_user(auth_app):
     assert response.status_code == 200
     assert response.json()["id"] == str(user.id)
     assert response.json()["user_type"] == "support"
+    assert response.json()["must_change_password"] is False
+
+
+async def test_me_reports_a_required_password_change(auth_app):
+    user = make_user(UserType.support)
+    user.must_change_password = True
+    with patch("app.api.deps.auth.resolve_token", new_callable=AsyncMock, return_value=user):
+        async with _client(auth_app, cookies={COOKIE: "tok"}) as client:
+            response = await client.get("/api/v1/auth/me")
+
+    assert response.status_code == 200, "/auth/me stays open so the UI can react"
+    assert response.json()["must_change_password"] is True
+
+
+async def test_password_change_stays_open_while_a_change_is_required(auth_app):
+    user = make_user(UserType.support)
+    user.must_change_password = True
+    with (
+        patch("app.api.deps.auth.resolve_token", new_callable=AsyncMock, return_value=user),
+        patch("app.api.routes.auth.change_own_password", new_callable=AsyncMock),
+        patch("app.api.routes.auth.issue_token", return_value="fresh"),
+    ):
+        async with _client(auth_app, cookies={COOKIE: "tok"}) as client:
+            response = await client.post(
+                "/api/v1/auth/password",
+                json={"current_password": "admin-set", "new_password": "My-own-password-1"},
+            )
+
+    assert response.status_code == 200
 
 
 # ---------------------------------------------------------------- own password

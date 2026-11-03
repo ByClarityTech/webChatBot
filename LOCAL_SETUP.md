@@ -170,7 +170,7 @@ With the backend virtualenv active, in the `backend` folder:
 python ..\scripts\create_super_admin.py --email you@example.com --name "Your Name"
 ```
 
-Enter the password twice when asked (at least 12 characters). Use this account to sign in at `/admin`.
+Enter the password twice when asked (at least 12 characters). Use this account to sign in at `/admin`, then add a client under **Clients** and its first Admin under **Users**.
 
 ---
 

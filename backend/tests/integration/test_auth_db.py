@@ -22,6 +22,7 @@ from app.db.init import alembic_config
 pytestmark = pytest.mark.integration
 
 PW = "Root-password-123"
+ADMIN_PW = "Admin-own-pass-123"
 SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "create_super_admin.py"
 HOURS = {
     "business_days": [1, 2, 3, 4, 5],
@@ -108,7 +109,10 @@ def test_migrations_downgrade_and_upgrade_cleanly(database_url, db):
     }
     assert not tables & {"users", "clients", "user_types", "user_sessions"}
     command.upgrade(config, "head")
-    assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0003_jwt_auth"
+    from alembic.script import ScriptDirectory
+
+    head = ScriptDirectory.from_config(config).get_current_head()
+    assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == head
     tables = {
         r[0] for r in db.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
     }
@@ -232,6 +236,12 @@ async def test_user_management_rules_and_audit_trail(app, db):
 
     async with browser(app) as admin, browser(app) as support:
         await login(admin, "admin@acme.com")
+        # The Super Admin chose this password, so the Admin must replace it first.
+        assert (await admin.get("/api/v1/admin/users")).status_code == 403
+        r = await admin.post(
+            "/api/v1/auth/password", json={"current_password": PW, "new_password": ADMIN_PW}
+        )
+        assert r.status_code == 200
         r = await admin.post(
             "/api/v1/admin/users",
             json={
@@ -269,16 +279,17 @@ async def test_user_management_rules_and_audit_trail(app, db):
         ("client.create", "root@example.com", "beta"),
         ("user.create", "root@example.com", "acme"),
         ("user.create", "root@example.com", "beta"),
+        ("user.password_change", "admin@acme.com", "acme"),
         ("user.create", "admin@acme.com", "acme"),
         ("user.deactivate", "admin@acme.com", "acme"),
         ("settings.business_hours_update", "admin@acme.com", "acme"),
     ]
 
     async with browser(app) as admin:
-        await login(admin, "admin@acme.com")
+        await login(admin, "admin@acme.com", ADMIN_PW)
         entries = (await admin.get("/api/v1/admin/audit-log")).json()["entries"]
     assert {e["client_id"] for e in entries} == {acme["id"]}
-    assert len(entries) == 5
+    assert len(entries) == 6
 
 
 async def test_own_password_change_signs_out_other_sessions(app, db):
@@ -313,9 +324,9 @@ def _run_script(database_url, *args, password=PW):
 def test_create_super_admin_script(database_url, db):
     created = _run_script(database_url, "--email", "Boss@Example.com", "--name", "Boss")
     assert created.returncode == 0, created.stderr
-    assert db.execute("SELECT email, user_type_id, client_id FROM users").fetchall() == [
-        ("boss@example.com", 1, None)
-    ]
+    assert db.execute(
+        "SELECT email, user_type_id, client_id, must_change_password FROM users"
+    ).fetchall() == [("boss@example.com", 1, None, False)], "they chose their own password"
 
     again = _run_script(database_url, "--email", "boss@example.com", "--name", "Boss")
     assert again.returncode == 1 and "already exists" in again.stdout + again.stderr
@@ -331,3 +342,46 @@ def test_create_super_admin_script(database_url, db):
     assert db.execute("SELECT is_active FROM users").fetchone()[0] is True
     actions = [r[0] for r in db.execute("SELECT action FROM admin_audit_log ORDER BY id")]
     assert actions == ["super_admin.create", "super_admin.password_reset"]
+
+
+async def test_admin_set_password_must_be_changed_before_anything_else(app, db):
+    add_super_admin(db)
+    async with browser(app) as sa:
+        await login(sa, "root@example.com")
+        acme = (
+            await sa.post("/api/v1/admin/clients", json={"name": "Acme", "slug": "acme"})
+        ).json()
+        created = (
+            await sa.post(
+                "/api/v1/admin/users",
+                json={
+                    "email": "help@acme.com",
+                    "full_name": "H",
+                    "password": PW,
+                    "user_type": "support",
+                    "client_id": acme["id"],
+                },
+            )
+        ).json()
+        assert created["must_change_password"] is True
+
+    async with browser(app) as support:
+        assert await login(support, "help@acme.com") == 200
+        assert (await support.get("/api/v1/auth/me")).json()["must_change_password"] is True
+        blocked = await support.get("/api/v1/admin/settings/business-hours")
+        assert blocked.status_code == 403 and blocked.json()["detail"] == "Password change required"
+
+        r = await support.post(
+            "/api/v1/auth/password",
+            json={"current_password": PW, "new_password": "My-own-pass-123"},
+        )
+        assert r.status_code == 200
+        assert (await support.get("/api/v1/auth/me")).json()["must_change_password"] is False
+        assert (await support.get("/api/v1/admin/settings/business-hours")).status_code == 200
+
+    async with browser(app) as sa:
+        await login(sa, "root@example.com")
+        r = await sa.patch(
+            f"/api/v1/admin/users/{created['id']}", json={"password": "Admin-reset-123"}
+        )
+        assert r.json()["must_change_password"] is True, "an admin reset asks again"

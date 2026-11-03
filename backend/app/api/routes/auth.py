@@ -30,6 +30,7 @@ def to_current_user_response(user: UserRecord) -> CurrentUserResponse:
         full_name=user.full_name,
         user_type=user.user_type_code,
         client=client,
+        must_change_password=user.must_change_password,
     )
 
 

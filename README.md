@@ -375,6 +375,12 @@ Set on the **frontend** service:
 4. **Calendar** — connect Google Calendar (OAuth).
 5. **Settings** — set business hours and timezone.
 6. **Bookings** — view appointments; cancel one if present.
+7. **Clients** (Super Admin) — add a client.
+8. **Users** — add an Admin for that client (Super Admin) or a Support user (Admin); copy the generated password.
+9. Sign in as the new user in a private window: you are asked to choose your own password first.
+10. **Audit log** — see the changes you just made.
+
+The sidebar shows only the pages your role can open. Click your name at the bottom of the sidebar to open **My account**.
 
 ### Dashboard home (`/admin`)
 
@@ -417,11 +423,25 @@ curl -X PATCH -b cookies.txt \
   http://localhost:8000/api/v1/admin/bookings/<booking-id>
 ```
 
-### Audit log (optional)
+### Clients (`/admin/clients`, Super Admin)
+
+Add a client with a name and a slug (filled in from the name; lowercase letters, digits and hyphens; it cannot be changed later). Rename, suspend or activate a client. Suspending signs out all of the client's users and blocks their sign-in until it is activated again.
+
+### Users (`/admin/users`, Super Admin and Admin)
+
+Super Admins see every user and can filter by client; they add Admins or Support users to an active client. Admins see the users of their own client and add Support users. When a user is created or their password is reset, the browser generates a 20-character password and shows it once with a **Copy** button; it is not stored anywhere else, so pass it to the user privately. Rename, reset password, deactivate and activate appear only on users you may manage (never on Super Admins or yourself).
+
+A user whose password was set by someone else must choose their own on first sign-in: until then every admin page sends them to **My account**, and the API answers `403 Password change required`.
+
+### My account (`/admin/account`, everyone)
+
+Shows your name, email, role and client, and lets you change your password. Changing it signs you out in every other browser; the current one stays signed in.
+
+### Audit log (`/admin/audit-log`, Super Admin and Admin)
 
 Key admin mutations are recorded in Postgres (`admin_audit_log`) with who did it (`user_id`) and which client it concerns (`client_id`): document upload/delete/reindex, booking cancel, business-hours update, calendar disconnect, client create/rename/suspend/activate, user create/update/activate/deactivate/password reset, and own password changes.
 
-Super Admins see every entry and can filter with `?client_id=`. Admins see only their own client's entries.
+Super Admins see every entry and can filter with `?client_id=`. Admins see only their own client's entries. The page shows the latest 50, 100 or 200 entries (the API maximum; there is no paging yet).
 
 ```bash
 curl -b cookies.txt \

@@ -22,13 +22,15 @@ class UserRecord:
     client_status: str | None
     # JWTs issued before this moment are refused (deactivation, password resets).
     tokens_valid_after: datetime | None = None
+    # Set when an admin chose the password; the user must pick their own next.
+    must_change_password: bool = False
 
 
 # Column order must match row_to_user.
 USER_COLUMNS = """
     u.id, u.client_id, u.user_type_id, t.code, u.email, u.password_hash,
     u.full_name, u.is_active, u.last_login_at, u.created_at,
-    c.name, c.slug, c.status, u.tokens_valid_after
+    c.name, c.slug, c.status, u.tokens_valid_after, u.must_change_password
 """
 
 USER_JOINS = """
@@ -54,6 +56,7 @@ def row_to_user(row: tuple) -> UserRecord:
         client_slug=row[11],
         client_status=row[12],
         tokens_valid_after=row[13],
+        must_change_password=row[14],
     )
 
 
@@ -100,16 +103,19 @@ async def insert_user(
     email: str,
     password_hash: str,
     full_name: str,
+    must_change_password: bool = False,
 ) -> UserRecord:
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO users (client_id, user_type_id, email, password_hash, full_name)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO users
+                    (client_id, user_type_id, email, password_hash, full_name,
+                     must_change_password)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (client_id, user_type_id, email, password_hash, full_name),
+                (client_id, user_type_id, email, password_hash, full_name, must_change_password),
             )
             row = await cur.fetchone()
         await conn.commit()
@@ -126,6 +132,7 @@ async def update_user(
     is_active: bool | None = None,
     password_hash: str | None = None,
     tokens_valid_after: datetime | None = None,
+    must_change_password: bool | None = None,
 ) -> UserRecord | None:
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
@@ -136,10 +143,18 @@ async def update_user(
                     is_active = COALESCE(%s, is_active),
                     password_hash = COALESCE(%s, password_hash),
                     tokens_valid_after = COALESCE(%s, tokens_valid_after),
+                    must_change_password = COALESCE(%s, must_change_password),
                     updated_at = NOW()
                 WHERE id = %s
                 """,
-                (full_name, is_active, password_hash, tokens_valid_after, user_id),
+                (
+                    full_name,
+                    is_active,
+                    password_hash,
+                    tokens_valid_after,
+                    must_change_password,
+                    user_id,
+                ),
             )
         await conn.commit()
     return await get_user_by_id(user_id)

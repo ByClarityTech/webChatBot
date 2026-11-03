@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { AdminSessionProvider } from "@/components/admin/admin-session";
 import { adminLogout, getCurrentUser, LOGIN_PATH, type AdminUser } from "@/lib/admin-api";
 import { ADMIN_PAGES, areaForPath, canAccess, USER_TYPE_LABELS } from "@/lib/admin-permissions";
+
+const ACCOUNT_PATH = "/admin/account";
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -14,6 +16,15 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const [user, setUser] = useState<AdminUser | null>(null);
   const [error, setError] = useState<string | null>(null);
   const isLoginPage = pathname === LOGIN_PATH;
+
+  const refresh = useCallback(async () => {
+    const current = await getCurrentUser();
+    if (!current) {
+      router.replace(LOGIN_PATH);
+      return;
+    }
+    setUser(current);
+  }, [router]);
 
   useEffect(() => {
     if (isLoginPage) {
@@ -45,6 +56,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     };
   }, [isLoginPage, router]);
 
+  // An admin set this user's password: only the account page is usable until they change it.
+  const mustChangePassword = user?.must_change_password ?? false;
+  useEffect(() => {
+    if (mustChangePassword && pathname !== ACCOUNT_PATH) {
+      router.replace(ACCOUNT_PATH);
+    }
+  }, [mustChangePassword, pathname, router]);
+
   async function handleSignOut() {
     try {
       await adminLogout();
@@ -74,12 +93,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     );
   }
 
-  const navItems = ADMIN_PAGES.filter((page) => canAccess(user.user_type, page.area));
+  const navItems = mustChangePassword
+    ? []
+    : ADMIN_PAGES.filter((page) => canAccess(user.user_type, page.area));
   const area = areaForPath(pathname);
   const allowed = area === null || canAccess(user.user_type, area);
 
   return (
-    <AdminSessionProvider value={user}>
+    <AdminSessionProvider value={{ user, refresh }}>
       <div className="flex min-h-screen">
         <aside className="flex w-64 shrink-0 flex-col border-r border-slate-200 bg-white">
           <div className="border-b border-slate-200 px-5 py-4">
@@ -108,14 +129,20 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           </nav>
 
           <div className="border-t border-slate-200 p-3">
-            <div className="px-3 pb-3">
+            <Link
+              href={ACCOUNT_PATH}
+              className={`block rounded-lg px-3 py-2 ${
+                pathname === ACCOUNT_PATH ? "bg-slate-100" : "hover:bg-slate-100"
+              }`}
+            >
               <p className="truncate text-sm font-medium text-slate-900">{user.full_name}</p>
               <p className="truncate text-xs text-slate-500">{user.email}</p>
               <p className="mt-1 text-xs text-slate-500">
                 {USER_TYPE_LABELS[user.user_type]}
                 {user.client ? ` · ${user.client.name}` : " · All clients"}
               </p>
-            </div>
+              <p className="mt-1 text-xs font-medium text-slate-700">My account</p>
+            </Link>
             <button
               type="button"
               onClick={() => void handleSignOut()}
@@ -127,7 +154,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         </aside>
 
         <main className="min-w-0 flex-1 bg-slate-50">
-          {allowed ? (
+          {mustChangePassword && pathname !== ACCOUNT_PATH ? (
+            <div className="px-8 py-10 text-sm text-slate-500">Loading...</div>
+          ) : allowed ? (
             children
           ) : (
             <div className="px-8 py-10">
