@@ -17,6 +17,7 @@ class BookingRecord:
     thread_id: UUID | None
     status: str
     created_at: datetime
+    client_id: UUID | None = None
 
 
 def _row_to_record(row: tuple) -> BookingRecord:
@@ -31,60 +32,8 @@ def _row_to_record(row: tuple) -> BookingRecord:
         thread_id=row[7],
         status=row[8],
         created_at=row[9],
+        client_id=row[10] if len(row) > 10 else None,
     )
-
-
-async def insert_booking(
-    *,
-    name: str,
-    phone: str,
-    email: str,
-    slot_start: datetime,
-    slot_end: datetime,
-    thread_id: UUID | None,
-    google_event_id: str | None = None,
-) -> BookingRecord:
-    async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                INSERT INTO bookings (
-                    name, phone, email, slot_start, slot_end,
-                    google_event_id, thread_id, status
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 'confirmed')
-                RETURNING id, name, phone, email, slot_start, slot_end,
-                          google_event_id, thread_id, status, created_at
-                """,
-                (
-                    name,
-                    phone,
-                    email,
-                    slot_start,
-                    slot_end,
-                    google_event_id,
-                    thread_id,
-                ),
-            )
-            row = await cur.fetchone()
-        await conn.commit()
-    if row is None:
-        raise RuntimeError("Failed to insert booking")
-    return _row_to_record(row)
-
-
-async def update_booking_google_event_id(booking_id: UUID, google_event_id: str) -> None:
-    async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                UPDATE bookings
-                SET google_event_id = %s
-                WHERE id = %s
-                """,
-                (google_event_id, booking_id),
-            )
-        await conn.commit()
 
 
 async def delete_booking(booking_id: UUID) -> None:
@@ -94,33 +43,20 @@ async def delete_booking(booking_id: UUID) -> None:
         await conn.commit()
 
 
-async def get_booking_by_id(booking_id: UUID) -> BookingRecord | None:
-    async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                SELECT id, name, phone, email, slot_start, slot_end,
-                       google_event_id, thread_id, status, created_at
-                FROM bookings
-                WHERE id = %s
-                """,
-                (booking_id,),
-            )
-            row = await cur.fetchone()
-    if row is None:
-        return None
-    return _row_to_record(row)
-
-
 def _booking_filter_clauses(
     *,
+    client_id: UUID | None,
     slot_from: datetime | None,
     slot_to: datetime | None,
     status: str | None,
 ) -> tuple[str, list]:
+    """client_id None means every client (only the Super Admin dashboard total uses that)."""
     clauses: list[str] = []
     params: list = []
 
+    if client_id is not None:
+        clauses.append("client_id = %s")
+        params.append(client_id)
     if slot_from is not None:
         clauses.append("slot_start >= %s")
         params.append(slot_from)
@@ -138,11 +74,13 @@ def _booking_filter_clauses(
 
 async def count_bookings(
     *,
+    client_id: UUID | None,
     slot_from: datetime | None = None,
     slot_to: datetime | None = None,
     status: str | None = None,
 ) -> int:
     where_sql, params = _booking_filter_clauses(
+        client_id=client_id,
         slot_from=slot_from,
         slot_to=slot_to,
         status=status,
@@ -158,6 +96,7 @@ async def count_bookings(
 
 async def list_bookings(
     *,
+    client_id: UUID,
     offset: int,
     limit: int,
     slot_from: datetime | None = None,
@@ -165,13 +104,14 @@ async def list_bookings(
     status: str | None = None,
 ) -> list[BookingRecord]:
     where_sql, params = _booking_filter_clauses(
+        client_id=client_id,
         slot_from=slot_from,
         slot_to=slot_to,
         status=status,
     )
     query = f"""
         SELECT id, name, phone, email, slot_start, slot_end,
-               google_event_id, thread_id, status, created_at
+               google_event_id, thread_id, status, created_at, client_id
         FROM bookings
         {where_sql}
         ORDER BY slot_start DESC
@@ -193,12 +133,100 @@ async def update_booking_status(booking_id: UUID, status: str) -> BookingRecord 
                 SET status = %s
                 WHERE id = %s
                 RETURNING id, name, phone, email, slot_start, slot_end,
-                          google_event_id, thread_id, status, created_at
+                          google_event_id, thread_id, status, created_at, client_id
                 """,
                 (status, booking_id),
             )
             row = await cur.fetchone()
         await conn.commit()
+    if row is None:
+        return None
+    return _row_to_record(row)
+
+
+# ---------------------------------------------------------------- per client (migration 0007)
+
+STATUS_PENDING = "pending"
+STATUS_CONFIRMED = "confirmed"
+# A pending booking holds its slot while the Google event is created (1-2 seconds). One left
+# behind by a crash stops blocking the slot after this long.
+PENDING_HOLD_MINUTES = 3
+
+# Column order must match _row_to_record (client_id last).
+_CLIENT_BOOKING_COLUMNS = """
+    id, name, phone, email, slot_start, slot_end,
+    google_event_id, thread_id, status, created_at, client_id
+"""
+
+
+async def claim_booking_slot(
+    *,
+    client_id: UUID,
+    name: str,
+    phone: str,
+    email: str,
+    slot_start: datetime,
+    slot_end: datetime,
+    thread_id: UUID | None,
+) -> BookingRecord:
+    """Holds the slot for this client as a pending booking, before anything is sent to Google.
+
+    In one transaction: drops this client's pending bookings older than PENDING_HOLD_MINUTES,
+    then inserts. Raises psycopg.errors.UniqueViolation when the client already has a pending
+    or confirmed booking for the slot (the caller answers 409)."""
+    async with get_db_connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    DELETE FROM bookings
+                    WHERE client_id = %s AND status = 'pending'
+                      AND created_at < NOW() - make_interval(mins => %s)
+                    """,
+                    (client_id, PENDING_HOLD_MINUTES),
+                )
+                await cur.execute(
+                    f"""
+                    INSERT INTO bookings (
+                        client_id, name, phone, email, slot_start, slot_end, thread_id, status
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
+                    RETURNING {_CLIENT_BOOKING_COLUMNS}
+                    """,
+                    (client_id, name, phone, email, slot_start, slot_end, thread_id),
+                )
+                row = await cur.fetchone()
+    return _row_to_record(row)
+
+
+async def confirm_booking(booking_id: UUID, google_event_id: str | None) -> BookingRecord | None:
+    """Pending -> confirmed, with the Google event that was created for it."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                UPDATE bookings SET status = 'confirmed', google_event_id = %s
+                WHERE id = %s AND status = 'pending'
+                RETURNING {_CLIENT_BOOKING_COLUMNS}
+                """,
+                (google_event_id, booking_id),
+            )
+            row = await cur.fetchone()
+        await conn.commit()
+    if row is None:
+        return None
+    return _row_to_record(row)
+
+
+async def get_client_booking(booking_id: UUID, *, client_id: UUID) -> BookingRecord | None:
+    """None when the booking does not exist or belongs to another client."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT {_CLIENT_BOOKING_COLUMNS} FROM bookings WHERE id = %s AND client_id = %s",
+                (booking_id, client_id),
+            )
+            row = await cur.fetchone()
     if row is None:
         return None
     return _row_to_record(row)

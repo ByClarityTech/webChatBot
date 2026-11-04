@@ -1,15 +1,25 @@
 from datetime import datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 from uuid import uuid4
 
 import pytest
-from auth_helpers import signed_in, signed_out
+from auth_helpers import make_client_record, signed_in, signed_out
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.api.routes.admin import bookings as admin_bookings
 from app.core.roles import UserType
 from app.db.models.booking import BookingRecord
+
+
+@pytest.fixture(autouse=True)
+def known_clients(monkeypatch):
+    """Every client id exists (the routes look the actor's client up)."""
+
+    async def get_client(client_id):
+        return make_client_record(client_id=client_id)
+
+    monkeypatch.setattr("app.services.client_scope.get_client", get_client)
 
 
 @pytest.fixture
@@ -68,6 +78,7 @@ async def test_list_bookings_with_auth_returns_paginated_list(admin_bookings_app
     assert payload["bookings"][0]["name"] == "Jane Doe"
     assert payload["bookings"][0]["email"] == "jane@example.com"
     mock_list.assert_awaited_once_with(
+        ANY,
         offset=0,
         limit=10,
         slot_from=None,
@@ -117,7 +128,7 @@ async def test_get_booking_detail(admin_bookings_app):
     assert payload["id"] == str(record.id)
     assert payload["phone"] == "+15551234567"
     assert payload["google_event_id"] == "evt_123"
-    mock_fetch.assert_awaited_once_with(record.id)
+    mock_fetch.assert_awaited_once_with(ANY, record.id)
 
 
 @pytest.mark.asyncio
@@ -159,7 +170,7 @@ async def test_cancel_booking(admin_bookings_app):
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "cancelled"
-    mock_cancel.assert_awaited_once_with(record.id)
+    mock_cancel.assert_awaited_once_with(ANY, record.id)
 
 
 @pytest.mark.asyncio
@@ -170,3 +181,38 @@ async def test_cancel_booking_without_auth_returns_401(admin_bookings_app):
             response = await client.patch(f"/api/v1/admin/bookings/{uuid4()}")
 
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_bookings_are_listed_for_the_admins_own_client(admin_bookings_app):
+    mock_list = AsyncMock(return_value=([], 0))
+    with (
+        signed_in(admin_bookings_app, UserType.admin) as admin,
+        patch("app.api.routes.admin.bookings.list_bookings", mock_list),
+    ):
+        transport = ASGITransport(app=admin_bookings_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            own = await client.get("/api/v1/admin/bookings")
+            other = await client.get("/api/v1/admin/bookings", params={"client_id": str(uuid4())})
+
+    assert own.status_code == 200
+    assert mock_list.await_args.args == (admin.client_id,)
+    assert other.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_a_super_admin_must_choose_the_client(admin_bookings_app):
+    mock_list = AsyncMock(return_value=([], 0))
+    chosen = uuid4()
+    with (
+        signed_in(admin_bookings_app, UserType.super_admin),
+        patch("app.api.routes.admin.bookings.list_bookings", mock_list),
+    ):
+        transport = ASGITransport(app=admin_bookings_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            missing = await client.get("/api/v1/admin/bookings")
+            response = await client.get("/api/v1/admin/bookings", params={"client_id": str(chosen)})
+
+    assert missing.status_code == 400
+    assert response.status_code == 200
+    assert mock_list.await_args.args == (chosen,)

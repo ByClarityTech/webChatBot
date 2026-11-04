@@ -57,6 +57,8 @@ export async function sendMessage(
 
 export type WidgetConfig = {
   client: string;
+  /** The client's display name, for the header and question buttons. */
+  name: string;
   /** The client's default questions, in display order (may be empty). */
   default_questions: string[];
 };

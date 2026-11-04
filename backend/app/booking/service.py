@@ -1,3 +1,10 @@
+"""Bookings of one client.
+
+A booking first holds its slot in the database (pending), then creates the Google event,
+then becomes confirmed. Two visitors racing for the same slot are separated by the database
+before anything reaches Google: the second gets BookingConflictError (409) and no invite.
+"""
+
 import logging
 from datetime import datetime
 from uuid import UUID
@@ -10,16 +17,17 @@ from app.booking.availability import (
     SlotNotAvailableError,
     validate_bookable_slot,
 )
-from app.core.config import get_settings
 from app.core.tracing import tag_langsmith_run
 from app.db.models.booking import (
     BookingRecord,
+    claim_booking_slot,
+    confirm_booking,
     count_bookings,
-    get_booking_by_id,
-    insert_booking,
-    list_bookings as list_bookings_db,
+    delete_booking,
+    get_client_booking,
     update_booking_status,
 )
+from app.db.models.booking import list_bookings as list_bookings_db
 from app.integrations.google.calendar_client import (
     GoogleCalendarError,
     create_calendar_event,
@@ -27,6 +35,20 @@ from app.integrations.google.calendar_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "BookingConflictError",
+    "BookingNotFoundError",
+    "CalendarNotConnectedError",
+    "SlotInPastError",
+    "SlotNotAvailableError",
+    "cancel_booking",
+    "create_booking",
+    "fetch_booking",
+    "list_bookings",
+]
+
+SLOT_TAKEN = "This time slot was just booked by someone else"
 
 
 class BookingConflictError(Exception):
@@ -37,95 +59,73 @@ class BookingNotFoundError(Exception):
     pass
 
 
-def _parse_thread_id(thread_id: str | None) -> UUID | None:
-    if not thread_id:
-        return None
-    return UUID(thread_id)
-
-
 async def create_booking(
     *,
+    client_id: UUID,
     name: str,
     phone: str,
     email: str,
-    slot_start,
-    thread_id: str | None = None,
+    slot_start: datetime,
+    thread_id: UUID | None = None,
 ) -> BookingRecord:
-    settings = get_settings()
+    normalized_start, slot_end, config = await validate_bookable_slot(client_id, slot_start)
 
-    normalized_start, slot_end = await validate_bookable_slot(slot_start)
-
-    summary = f"Meeting with {name}"
-    description = (
-        f"Visitor booking via website assistant.\n\n"
-        f"Name: {name}\n"
-        f"Phone: {phone}\n"
-        f"Email: {email}"
-    )
-
-    event_id: str | None = None
+    # 1. Hold the slot. A second request for it stops here, before Google sends any invite.
     try:
-        event_id = await create_calendar_event(
-            calendar_id=settings.google_calendar_id,
-            summary=summary,
-            description=description,
-            start=normalized_start,
-            end=slot_end,
-            attendee_email=email,
-            timezone=settings.booking_timezone,
-        )
-    except GoogleCalendarError:
-        raise
-
-    try:
-        record = await insert_booking(
+        held = await claim_booking_slot(
+            client_id=client_id,
             name=name,
             phone=phone,
             email=email,
             slot_start=normalized_start,
             slot_end=slot_end,
-            thread_id=_parse_thread_id(thread_id),
-            google_event_id=event_id,
+            thread_id=thread_id,
         )
     except psycopg.errors.UniqueViolation as exc:
-        if event_id:
-            try:
-                await delete_calendar_event(
-                    calendar_id=settings.google_calendar_id,
-                    event_id=event_id,
-                )
-            except GoogleCalendarError:
-                logger.exception(
-                    "Failed to roll back Google event %s after booking conflict",
-                    event_id,
-                )
-        raise BookingConflictError("This time slot was just booked by someone else") from exc
+        raise BookingConflictError(SLOT_TAKEN) from exc
+
+    # 2. The event in the client's calendar (this emails the visitor an invite).
+    try:
+        event_id = await create_calendar_event(
+            client_id=client_id,
+            summary=f"Meeting with {name}",
+            description=(
+                "Visitor booking via website assistant.\n\n"
+                f"Name: {name}\nPhone: {phone}\nEmail: {email}"
+            ),
+            start=normalized_start,
+            end=slot_end,
+            attendee_email=email,
+            timezone=config.booking_timezone,
+        )
     except Exception:
-        if event_id:
-            try:
-                await delete_calendar_event(
-                    calendar_id=settings.google_calendar_id,
-                    event_id=event_id,
-                )
-            except GoogleCalendarError:
-                logger.exception(
-                    "Failed to roll back Google event %s after DB error",
-                    event_id,
-                )
+        await delete_booking(held.id)  # free the slot again
         raise
+
+    # 3. Confirm. None means the hold expired and the slot was taken meanwhile (only possible
+    # if Google took longer than the hold time): undo the event.
+    record = await confirm_booking(held.id, event_id)
+    if record is None:
+        try:
+            await delete_calendar_event(client_id=client_id, event_id=event_id)
+        except GoogleCalendarError:
+            logger.exception("Could not remove Google event %s of an expired hold", event_id)
+        raise BookingConflictError(SLOT_TAKEN)
 
     tag_langsmith_run(agent="public", intent="booking", booking_id=str(record.id))
     return record
 
 
-async def fetch_booking(booking_id: UUID) -> BookingRecord:
-    record = await get_booking_by_id(booking_id)
+async def fetch_booking(client_id: UUID, booking_id: UUID) -> BookingRecord:
+    # Same answer for "doesn't exist" and "another client's".
+    record = await get_client_booking(booking_id, client_id=client_id)
     if record is None:
         raise BookingNotFoundError("Booking not found")
     return record
 
 
 async def list_bookings(
+    client_id: UUID,
     *,
     offset: int,
     limit: int,
@@ -133,35 +133,19 @@ async def list_bookings(
     slot_to: datetime | None = None,
     status: str | None = None,
 ) -> tuple[list[BookingRecord], int]:
-    records = await list_bookings_db(
-        offset=offset,
-        limit=limit,
-        slot_from=slot_from,
-        slot_to=slot_to,
-        status=status,
-    )
-    total = await count_bookings(
-        slot_from=slot_from,
-        slot_to=slot_to,
-        status=status,
-    )
+    filters = {"client_id": client_id, "slot_from": slot_from, "slot_to": slot_to, "status": status}
+    records = await list_bookings_db(offset=offset, limit=limit, **filters)
+    total = await count_bookings(**filters)
     return records, total
 
 
-async def cancel_booking(booking_id: UUID) -> BookingRecord:
-    record = await get_booking_by_id(booking_id)
-    if record is None:
-        raise BookingNotFoundError("Booking not found")
-
+async def cancel_booking(client_id: UUID, booking_id: UUID) -> BookingRecord:
+    record = await fetch_booking(client_id, booking_id)
     if record.status == "cancelled":
         return record
 
-    settings = get_settings()
     if record.google_event_id:
-        await delete_calendar_event(
-            calendar_id=settings.google_calendar_id,
-            event_id=record.google_event_id,
-        )
+        await delete_calendar_event(client_id=client_id, event_id=record.google_event_id)
 
     updated = await update_booking_status(booking_id, "cancelled")
     if updated is None:

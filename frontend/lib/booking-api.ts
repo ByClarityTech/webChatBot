@@ -12,6 +12,8 @@ export type AvailabilityResponse = {
 };
 
 export type BookingCreatePayload = {
+  /** Slug of the client whose widget this is. */
+  client: string;
   name: string;
   phone: string;
   email: string;
@@ -48,10 +50,9 @@ async function parseApiError(response: Response): Promise<string> {
   return text || `Request failed (${response.status})`;
 }
 
-export async function getAvailability(date: string): Promise<AvailabilityResponse> {
-  const response = await fetch(
-    `${API_URL}/api/v1/booking/availability?date=${encodeURIComponent(date)}`,
-  );
+export async function getAvailability(client: string, date: string): Promise<AvailabilityResponse> {
+  const params = new URLSearchParams({ client, date });
+  const response = await fetch(`${API_URL}/api/v1/booking/availability?${params}`);
 
   if (!response.ok) {
     throw new Error(await parseApiError(response));
@@ -65,6 +66,7 @@ export async function createBooking(payload: BookingCreatePayload): Promise<Book
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
+      client: payload.client,
       name: payload.name,
       phone: payload.phone,
       email: payload.email,

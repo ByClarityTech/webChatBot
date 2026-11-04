@@ -1,24 +1,47 @@
+"""Public booking routes: the client slug, the thread check and the error answers.
+
+The booking service, client lookup and thread lookup are replaced by fakes."""
+
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
+from auth_helpers import make_client_record
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.api.routes import booking
-from app.booking.availability import SlotNotAvailableError
+from app.booking.availability import CalendarNotConnectedError, SlotNotAvailableError
+from app.booking.service import BookingConflictError
 from app.db.models.booking import BookingRecord
+from app.integrations.google.calendar_client import GoogleCalendarError
+
+CLINIC = make_client_record("clinic")
+OTHER = make_client_record("other")
+BODY = {
+    "client": "clinic",
+    "name": "Jane Doe",
+    "phone": "+15551234567",
+    "email": "jane@example.com",
+    "slot_start": "2030-07-02T10:00:00+05:30",
+}
 
 
 @pytest.fixture
-def booking_app():
+def booking_app(monkeypatch):
+    clients = {CLINIC.slug: CLINIC, OTHER.slug: OTHER}
+
+    async def get_client_by_slug(slug):
+        return clients.get(slug)
+
+    monkeypatch.setattr("app.services.public_client.get_client_by_slug", get_client_by_slug)
     test_app = FastAPI()
     test_app.include_router(booking.router, prefix="/api/v1")
     return test_app
 
 
-def _sample_booking() -> BookingRecord:
+def _sample_booking(client_id=CLINIC.id) -> BookingRecord:
     now = datetime(2030, 7, 2, 10, 0)
     return BookingRecord(
         id=uuid4(),
@@ -31,146 +54,111 @@ def _sample_booking() -> BookingRecord:
         thread_id=None,
         status="confirmed",
         created_at=now,
+        client_id=client_id,
     )
+
+
+async def post(app, **changes):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        return await client.post("/api/v1/booking", json={**BODY, **changes})
 
 
 @pytest.mark.asyncio
 async def test_create_booking_success(booking_app):
-    record = _sample_booking()
-    with patch(
-        "app.api.routes.booking.create_booking",
-        new_callable=AsyncMock,
-        return_value=record,
-    ):
-        transport = ASGITransport(app=booking_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.post(
-                "/api/v1/booking",
-                json={
-                    "name": "Jane Doe",
-                    "phone": "+15551234567",
-                    "email": "jane@example.com",
-                    "slot_start": "2030-07-02T10:00:00+05:30",
-                },
-            )
+    create = AsyncMock(return_value=_sample_booking())
+    with patch("app.api.routes.booking.create_booking", create):
+        response = await post(booking_app)
 
     assert response.status_code == 201
-    payload = response.json()
-    assert payload["status"] == "confirmed"
-    assert "id" in payload
+    assert response.json()["status"] == "confirmed"
+    assert create.await_args.kwargs["client_id"] == CLINIC.id
 
 
 @pytest.mark.asyncio
-async def test_create_booking_slot_unavailable(booking_app):
-    with patch(
-        "app.api.routes.booking.create_booking",
-        new_callable=AsyncMock,
-        side_effect=SlotNotAvailableError("Selected time slot is no longer available"),
-    ):
-        transport = ASGITransport(app=booking_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.post(
-                "/api/v1/booking",
-                json={
-                    "name": "Jane Doe",
-                    "phone": "+15551234567",
-                    "email": "jane@example.com",
-                    "slot_start": "2030-07-02T10:00:00+05:30",
-                },
-            )
+@pytest.mark.parametrize(
+    ("changes", "expected"), [({"client": "nope"}, 404), ({"client": None}, 422)]
+)
+async def test_booking_needs_a_known_client(booking_app, changes, expected):
+    create = AsyncMock()
+    with patch("app.api.routes.booking.create_booking", create):
+        response = await post(booking_app, **changes)
+    assert response.status_code == expected
+    create.assert_not_awaited()
 
-    assert response.status_code == 409
+
+@pytest.mark.asyncio
+async def test_a_thread_must_belong_to_the_same_client(booking_app):
+    own, foreign = uuid4(), uuid4()
+    owners = {own: CLINIC.id, foreign: OTHER.id}
+
+    async def get_chat_thread_client(thread_id):
+        return owners.get(thread_id)
+
+    create = AsyncMock(return_value=_sample_booking())
+    with (
+        patch("app.api.routes.booking.get_chat_thread_client", get_chat_thread_client),
+        patch("app.api.routes.booking.create_booking", create),
+    ):
+        ok = await post(booking_app, thread_id=str(own))
+        cross = await post(booking_app, thread_id=str(foreign))
+        unknown = await post(booking_app, thread_id=str(uuid4()))
+        malformed = await post(booking_app, thread_id="not-a-uuid")
+
+    assert ok.status_code == 201
+    assert create.await_args.kwargs["thread_id"] == own
+    assert (cross.status_code, unknown.status_code, malformed.status_code) == (400, 400, 422)
+    assert cross.json()["detail"] == "This conversation belongs to a different assistant"
+    assert create.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (SlotNotAvailableError("Selected time slot is no longer available"), 409),
+        (BookingConflictError("This time slot was just booked by someone else"), 409),
+        (CalendarNotConnectedError("not connected"), 503),
+        (GoogleCalendarError("Google Calendar access failed. Reconnect..."), 503),
+    ],
+)
+async def test_booking_errors(booking_app, error, expected):
+    with patch("app.api.routes.booking.create_booking", AsyncMock(side_effect=error)):
+        response = await post(booking_app)
+    assert response.status_code == expected
+    if expected == 503:
+        # Never the admin wording about reconnecting.
+        assert response.json()["detail"].startswith("Online booking isn't available")
 
 
 @pytest.mark.asyncio
 async def test_create_booking_rate_limited(booking_app):
-    from app.core.rate_limit import reset_booking_rate_limiter
-
-    reset_booking_rate_limiter()
-    record = _sample_booking()
-
     with (
-        patch("app.core.rate_limit.get_settings") as mock_settings,
-        patch(
-            "app.api.routes.booking.create_booking",
-            new_callable=AsyncMock,
-            return_value=record,
-        ),
+        patch("app.api.routes.booking.check_booking_rate_limit", return_value=False),
+        patch("app.api.routes.booking.create_booking", AsyncMock()) as create,
     ):
-        settings = mock_settings.return_value
-        settings.booking_rate_limit_per_hour = 1
-
-        transport = ASGITransport(app=booking_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            payload = {
-                "name": "Jane Doe",
-                "phone": "+15551234567",
-                "email": "jane@example.com",
-                "slot_start": "2030-07-02T10:00:00+05:30",
-            }
-            first = await client.post("/api/v1/booking", json=payload)
-            second = await client.post("/api/v1/booking", json=payload)
-
-    reset_booking_rate_limiter()
-    assert first.status_code == 201
-    assert second.status_code == 429
-    assert "Too many booking requests" in second.json()["detail"]
+        response = await post(booking_app)
+    assert response.status_code == 429
+    create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_create_booking_conflict(booking_app):
-    from app.booking.service import BookingConflictError
-
-    with patch(
-        "app.api.routes.booking.create_booking",
-        new_callable=AsyncMock,
-        side_effect=BookingConflictError("This time slot was just booked by someone else"),
-    ):
-        transport = ASGITransport(app=booking_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.post(
-                "/api/v1/booking",
-                json={
-                    "name": "Jane Doe",
-                    "phone": "+15551234567",
-                    "email": "jane@example.com",
-                    "slot_start": "2030-07-02T10:00:00+05:30",
-                },
-            )
-
-    assert response.status_code == 409
-    assert "just booked" in response.json()["detail"].lower()
+async def test_create_booking_validation_error(booking_app):
+    response = await post(booking_app, phone="123", email="not-an-email")
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_get_booking_not_found(booking_app):
-    from app.booking.service import BookingNotFoundError
-
-    with patch(
-        "app.api.routes.booking.fetch_booking",
-        new_callable=AsyncMock,
-        side_effect=BookingNotFoundError("Booking not found"),
-    ):
-        transport = ASGITransport(app=booking_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get(f"/api/v1/booking/{uuid4()}")
-
-    assert response.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_get_booking_success(booking_app):
+async def test_get_booking_is_looked_up_within_the_client(booking_app):
     record = _sample_booking()
-    with patch(
-        "app.api.routes.booking.fetch_booking",
-        new_callable=AsyncMock,
-        return_value=record,
-    ):
-        transport = ASGITransport(app=booking_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get(f"/api/v1/booking/{record.id}")
+    fetch = AsyncMock(return_value=record)
+    with patch("app.api.routes.booking.fetch_booking", fetch):
+        async with AsyncClient(
+            transport=ASGITransport(app=booking_app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/v1/booking/{record.id}", params={"client": "clinic"})
+            missing_client = await client.get(f"/api/v1/booking/{record.id}")
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["id"] == str(record.id)
-    assert payload["status"] == "confirmed"
+    assert response.json()["id"] == str(record.id)
+    assert fetch.await_args.args == (CLINIC.id, record.id)
+    assert missing_client.status_code == 422

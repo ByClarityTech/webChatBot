@@ -1,9 +1,9 @@
 from datetime import date, datetime, time, timedelta
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from app.booking.config import BusinessHoursConfig, get_business_hours_config
 from app.booking.schemas import AvailabilityResponse, Slot
-from app.core.config import get_settings
 from app.integrations.google.calendar_client import query_freebusy
 from app.integrations.google.oauth import is_google_calendar_connected
 from app.integrations.google.schemas import BusyPeriod
@@ -59,9 +59,10 @@ def generate_candidate_slots(
     return slots
 
 
-async def get_availability_for_date(target_date: date) -> AvailabilityResponse:
-    config = await get_business_hours_config()
-    settings = get_settings()
+async def get_availability_for_date(client_id: UUID, target_date: date) -> AvailabilityResponse:
+    """Open slots of one client: its business hours (in its timezone) minus busy times in its
+    own Google Calendar."""
+    config = await get_business_hours_config(client_id)
     tz = ZoneInfo(config.booking_timezone)
 
     if target_date.isoweekday() not in config.business_days:
@@ -71,10 +72,9 @@ async def get_availability_for_date(target_date: date) -> AvailabilityResponse:
             slots=[],
         )
 
-    if not await is_google_calendar_connected():
+    if not await is_google_calendar_connected(client_id):
         raise CalendarNotConnectedError(
-            "Google Calendar is not connected. "
-            "Visit GET /api/v1/admin/google/oauth/start to connect."
+            "Google Calendar is not connected (or needs to be connected again) for this client."
         )
 
     business_start = _parse_time(config.business_hours_start)
@@ -83,7 +83,7 @@ async def get_availability_for_date(target_date: date) -> AvailabilityResponse:
     day_end = datetime.combine(target_date, business_end, tzinfo=tz)
 
     freebusy = await query_freebusy(
-        calendar_id=settings.google_calendar_id,
+        client_id=client_id,
         time_min=day_start,
         time_max=day_end,
         timezone=config.booking_timezone,
@@ -117,9 +117,11 @@ def _normalize_slot_start(slot_start: datetime, tz: ZoneInfo) -> datetime:
     return slot_start.astimezone(tz)
 
 
-async def validate_bookable_slot(slot_start: datetime) -> tuple[datetime, datetime]:
-    """Return (slot_start, slot_end) if bookable; raise otherwise."""
-    config = await get_business_hours_config()
+async def validate_bookable_slot(
+    client_id: UUID, slot_start: datetime
+) -> tuple[datetime, datetime, BusinessHoursConfig]:
+    """Return (slot_start, slot_end, the client's hours config) if bookable; raise otherwise."""
+    config = await get_business_hours_config(client_id)
     tz = ZoneInfo(config.booking_timezone)
     normalized_start = _normalize_slot_start(slot_start, tz)
     duration = timedelta(minutes=config.booking_slot_duration_minutes)
@@ -130,10 +132,10 @@ async def validate_bookable_slot(slot_start: datetime) -> tuple[datetime, dateti
         raise SlotInPastError("Cannot book a slot in the past")
 
     target_date = normalized_start.date()
-    availability = await get_availability_for_date(target_date)
+    availability = await get_availability_for_date(client_id, target_date)
 
     for slot in availability.slots:
         if slot.start == normalized_start and slot.end == slot_end:
-            return normalized_start, slot_end
+            return normalized_start, slot_end, config
 
     raise SlotNotAvailableError("Selected time slot is no longer available")

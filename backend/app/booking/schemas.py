@@ -3,6 +3,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field
 
+from app.schemas.users import SLUG_PATTERN
+
 
 class Slot(BaseModel):
     start: datetime
@@ -21,6 +23,8 @@ class OAuthStartResponse(BaseModel):
 
 class OAuthStatusResponse(BaseModel):
     connected: bool
+    # A connection exists but Google refused it (revoked or expired grant): connect again.
+    needs_reconnect: bool = False
     calendar_id: str | None = None
     expires_at: datetime | None = None
     connected_email: str | None = None
@@ -40,11 +44,14 @@ class OAuthDisconnectResponse(BaseModel):
 
 
 class BookingCreateRequest(BaseModel):
+    # Slug of the client whose widget this is (the embed URL's ?client=).
+    client: str = Field(..., min_length=2, max_length=100, pattern=SLUG_PATTERN)
     name: str = Field(..., min_length=1, max_length=255)
     phone: str = Field(..., min_length=7, max_length=50)
     email: EmailStr
     slot_start: datetime
-    thread_id: str | None = None
+    # The chat this booking came from; must belong to the same client.
+    thread_id: UUID | None = None
 
 
 class BookingResponse(BaseModel):

@@ -3,12 +3,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { ClientPicker, useClientScope } from "@/components/admin/client-picker";
 import { adminFetch } from "@/lib/admin-api";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 type OAuthStatus = {
   connected: boolean;
+  /** Connected before, but Google refused it (revoked or expired): connect again. */
+  needs_reconnect?: boolean;
   calendar_id: string | null;
   expires_at: string | null;
   connected_email: string | null;
@@ -40,8 +43,18 @@ function isExpiringWithinDays(expiresAt: string | null, days: number): boolean {
   return daysUntilExpiry >= 0 && daysUntilExpiry < days;
 }
 
+function clientIdFromUrl(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  return new URLSearchParams(window.location.search).get("client_id") ?? "";
+}
+
 export default function AdminCalendarPage() {
   const router = useRouter();
+  // After Google, a Super Admin comes back with ?client_id= for the client just connected.
+  const clientScope = useClientScope(clientIdFromUrl());
+  const { needsClient, withClient } = clientScope;
   const [status, setStatus] = useState<OAuthStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
@@ -51,17 +64,23 @@ export default function AdminCalendarPage() {
 
   const loadStatus = useCallback(async () => {
     setError(null);
-    const response = await adminFetch("/api/v1/admin/google/oauth/status");
+    const response = await adminFetch(withClient("/api/v1/admin/google/oauth/status"));
     if (!response.ok) {
       throw new Error(await parseError(response));
     }
     return (await response.json()) as OAuthStatus;
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- withClient changes with scope
+  }, [clientScope.scope]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
+      if (needsClient) {
+        setStatus(null);
+        setLoading(false);
+        return;
+      }
       setLoading(true);
       try {
         const data = await loadStatus();
@@ -86,7 +105,7 @@ export default function AdminCalendarPage() {
     return () => {
       cancelled = true;
     };
-  }, [loadStatus]);
+  }, [loadStatus, needsClient]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -97,7 +116,12 @@ export default function AdminCalendarPage() {
       return;
     }
 
-    router.replace("/admin/calendar");
+    const returnedClient = params.get("client_id");
+    router.replace(
+      returnedClient
+        ? `/admin/calendar?client_id=${encodeURIComponent(returnedClient)}`
+        : "/admin/calendar",
+    );
 
     if (connected === "1") {
       setSuccess("Google Calendar connected successfully.");
@@ -124,7 +148,7 @@ export default function AdminCalendarPage() {
     setSuccess(null);
 
     try {
-      const response = await adminFetch("/api/v1/admin/google/oauth/start");
+      const response = await adminFetch(withClient("/api/v1/admin/google/oauth/start"));
       if (!response.ok) {
         throw new Error(await parseError(response));
       }
@@ -146,7 +170,7 @@ export default function AdminCalendarPage() {
     setSuccess(null);
 
     try {
-      const response = await adminFetch("/api/v1/admin/google/oauth/disconnect", {
+      const response = await adminFetch(withClient("/api/v1/admin/google/oauth/disconnect"), {
         method: "DELETE",
       });
       if (!response.ok) {
@@ -175,7 +199,12 @@ export default function AdminCalendarPage() {
       <h1 className="text-2xl font-semibold text-slate-900">Google Calendar</h1>
       <p className="mt-2 max-w-2xl text-sm text-slate-600">
         Connect your company calendar so visitors can see real availability and receive invites.
+        Each client connects its own calendar.
       </p>
+
+      <div className="mt-6">
+        <ClientPicker scope={clientScope} id="calendar-client" />
+      </div>
 
       {error ? (
         <div className="mt-6 max-w-xl rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -189,7 +218,9 @@ export default function AdminCalendarPage() {
       ) : null}
 
       <div className="mt-8 max-w-xl rounded-xl border border-slate-200 bg-white p-6">
-        {loading ? (
+        {needsClient ? (
+          <p className="text-sm text-slate-500">Choose a client to see and connect its calendar.</p>
+        ) : loading ? (
           <p className="text-sm text-slate-500">Loading connection status...</p>
         ) : status?.connected ? (
           <div className="space-y-4">
@@ -236,10 +267,25 @@ export default function AdminCalendarPage() {
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="flex items-center gap-2">
-              <span className="inline-block h-2.5 w-2.5 rounded-full bg-slate-300" />
-              <p className="text-sm font-medium text-slate-900">Not connected</p>
-            </div>
+            {status?.needs_reconnect ? (
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-500" />
+                <p className="text-sm font-medium text-slate-900">
+                  Reconnect needed{status.connected_email ? ` (${status.connected_email})` : ""}
+                </p>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-2.5 w-2.5 rounded-full bg-slate-300" />
+                <p className="text-sm font-medium text-slate-900">Not connected</p>
+              </div>
+            )}
+            {status?.needs_reconnect ? (
+              <p className="text-sm text-amber-800">
+                Google stopped accepting this connection, so online booking is off for this
+                client. Connect again to turn it back on.
+              </p>
+            ) : null}
             <p className="text-sm text-slate-600">
               You will be redirected to Google to authorize calendar access. After consent, you
               return to this page automatically.
@@ -256,7 +302,11 @@ export default function AdminCalendarPage() {
               disabled={connecting}
               className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
             >
-              {connecting ? "Redirecting..." : "Connect Google Calendar"}
+              {connecting
+                ? "Redirecting..."
+                : status?.needs_reconnect
+                  ? "Reconnect Google Calendar"
+                  : "Connect Google Calendar"}
             </button>
           </div>
         )}

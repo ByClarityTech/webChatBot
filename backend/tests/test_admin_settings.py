@@ -1,9 +1,10 @@
 from datetime import date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
-from auth_helpers import signed_in, signed_out
+from auth_helpers import make_client_record, signed_in, signed_out
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -12,6 +13,16 @@ from app.booking.availability import generate_candidate_slots, get_availability_
 from app.booking.config import BusinessHoursConfig
 from app.core.roles import UserType
 from app.db.models.admin_settings import BusinessHoursRecord
+
+
+@pytest.fixture(autouse=True)
+def known_clients(monkeypatch):
+    """Every client id exists (the routes look the actor's client up)."""
+
+    async def get_client(client_id):
+        return make_client_record(client_id=client_id)
+
+    monkeypatch.setattr("app.services.client_scope.get_client", get_client)
 
 
 @pytest.fixture
@@ -66,7 +77,7 @@ async def test_get_business_hours_with_auth_returns_settings(
             return_value=SAMPLE_DB_CONFIG,
         ),
         patch(
-            "app.api.routes.admin.settings.get_business_hours",
+            "app.api.routes.admin.settings.get_client_business_hours",
             new_callable=AsyncMock,
             return_value=SAMPLE_DB_RECORD,
         ),
@@ -91,7 +102,7 @@ async def test_put_business_hours_updates_settings(admin_settings_app):
 
     with (
         signed_in(admin_settings_app, UserType.admin),
-        patch("app.api.routes.admin.settings.upsert_business_hours", mock_upsert),
+        patch("app.api.routes.admin.settings.save_client_business_hours", mock_upsert),
         patch(
             "app.api.routes.admin.settings.get_business_hours_config",
             new_callable=AsyncMock,
@@ -176,9 +187,40 @@ async def test_availability_uses_updated_db_settings():
             return_value=MagicMock(busy=[]),
         ),
     ):
-        result = await get_availability_for_date(target_date)
+        result = await get_availability_for_date(uuid4(), target_date)
 
     assert result.timezone == "Asia/Kolkata"
     assert result.slots
     assert result.slots[0].start.hour == 10
     assert all(slot.start.hour < 16 or (slot.start.hour == 15 and slot.end.hour <= 16) for slot in result.slots)
+
+
+@pytest.mark.asyncio
+async def test_business_hours_are_saved_for_the_admins_client(admin_settings_app):
+    mock_save = AsyncMock(return_value=SAMPLE_DB_RECORD)
+    with (
+        signed_in(admin_settings_app, UserType.admin) as admin,
+        patch("app.api.routes.admin.settings.save_client_business_hours", mock_save),
+        patch(
+            "app.api.routes.admin.settings.get_business_hours_config",
+            new_callable=AsyncMock,
+            return_value=SAMPLE_DB_CONFIG,
+        ),
+    ):
+        transport = ASGITransport(app=admin_settings_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.put(
+                "/api/v1/admin/settings/business-hours",
+                json={
+                    "business_days": [1, 2, 3, 4, 5],
+                    "start_time": "10:00",
+                    "end_time": "16:00",
+                    "slot_duration_minutes": 30,
+                    "slot_buffer_minutes": 10,
+                    "timezone": "Europe/London",
+                },
+            )
+
+    assert response.status_code == 200
+    assert mock_save.await_args.args == (admin.client_id,)
+    assert mock_save.await_args.kwargs["timezone"] == "Europe/London"

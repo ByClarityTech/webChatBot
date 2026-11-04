@@ -1,10 +1,11 @@
 from datetime import date, datetime
 from unittest.mock import AsyncMock, patch
 from urllib.parse import quote
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
-from auth_helpers import signed_in
+from auth_helpers import make_client_record, signed_in
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -38,11 +39,16 @@ def booking_app():
 @pytest.mark.asyncio
 async def test_oauth_status_not_connected(oauth_app):
     with (
-        signed_in(oauth_app, UserType.support),
+        signed_in(oauth_app, UserType.support) as user,
         patch(
-            "app.api.routes.admin.google_oauth.is_google_calendar_connected",
+            "app.services.client_scope.get_client",
             new_callable=AsyncMock,
-            return_value=False,
+            return_value=make_client_record(client_id=user.client_id),
+        ),
+        patch(
+            "app.api.routes.admin.google_oauth.get_client_google_token",
+            new_callable=AsyncMock,
+            return_value=None,
         ),
     ):
         transport = ASGITransport(app=oauth_app)
@@ -58,17 +64,43 @@ async def test_oauth_status_not_connected(oauth_app):
 
 @pytest.mark.asyncio
 async def test_availability_not_connected_returns_503(booking_app):
-    with patch(
-        "app.api.routes.booking.get_availability_for_date",
-        new_callable=AsyncMock,
-        side_effect=CalendarNotConnectedError("Google Calendar is not connected."),
+    with (
+        patch(
+            "app.services.public_client.get_client_by_slug",
+            new_callable=AsyncMock,
+            return_value=make_client_record("clinic"),
+        ),
+        patch(
+            "app.api.routes.booking.get_availability_for_date",
+            new_callable=AsyncMock,
+            side_effect=CalendarNotConnectedError("Google Calendar is not connected."),
+        ),
     ):
         transport = ASGITransport(app=booking_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get("/api/v1/booking/availability?date=2026-07-01")
+            response = await client.get(
+                "/api/v1/booking/availability", params={"date": "2026-07-01", "client": "clinic"}
+            )
 
+    # Visitors get a plain message, never calendar or reconnect details.
     assert response.status_code == 503
-    assert "not connected" in response.json()["detail"].lower()
+    assert response.json()["detail"].startswith("Online booking isn't available")
+
+
+@pytest.mark.asyncio
+async def test_availability_needs_a_known_client(booking_app):
+    with patch(
+        "app.services.public_client.get_client_by_slug", new_callable=AsyncMock, return_value=None
+    ):
+        transport = ASGITransport(app=booking_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            missing = await client.get(
+                "/api/v1/booking/availability", params={"date": "2026-07-01"}
+            )
+            unknown = await client.get(
+                "/api/v1/booking/availability", params={"date": "2026-07-01", "client": "nope"}
+            )
+    assert (missing.status_code, unknown.status_code) == (422, 404)
 
 
 def test_generate_candidate_slots_respects_business_hours():
@@ -136,7 +168,7 @@ async def test_availability_excludes_busy_periods():
             return_value=freebusy,
         ),
     ):
-        result = await get_availability_for_date(target_date)
+        result = await get_availability_for_date(uuid4(), target_date)
 
     assert isinstance(result, AvailabilityResponse)
     assert result.date == target_date
@@ -168,7 +200,7 @@ async def test_availability_weekend_returns_empty_slots():
             return_value=True,
         ),
     ):
-        result = await get_availability_for_date(date(2026, 7, 4))
+        result = await get_availability_for_date(uuid4(), date(2026, 7, 4))
 
     assert result.slots == []
 

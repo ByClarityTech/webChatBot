@@ -4,8 +4,11 @@ from fastapi import APIRouter, HTTPException, Request, status
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.db.models.chat_thread import claim_chat_thread
-from app.db.models.client import ClientRecord, get_client_by_slug
+from app.db.models.client import ClientRecord
 from app.schemas.chat import ChatRequest, ChatResponse, SourceCitation
+from app.services.public_client import NOT_AVAILABLE_MESSAGE, get_active_client
+
+__all__ = ["NOT_AVAILABLE_MESSAGE", "router"]
 
 router = APIRouter(tags=["chat"])
 
@@ -13,18 +16,6 @@ EMPTY_KB_MESSAGE = (
     "I do not have any indexed site documentation yet. "
     "Please upload content through the documents ingest API first."
 )
-
-# Same answer for an unknown and a suspended client, so slugs of suspended clients are not
-# confirmed.
-NOT_AVAILABLE_MESSAGE = "This assistant is not available"
-
-
-async def _active_client(slug: str) -> ClientRecord:
-    client = await get_client_by_slug(slug)
-    if client is None or client.status != "active":
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_AVAILABLE_MESSAGE)
-    return client
-
 
 async def _thread_for_client(thread_id: uuid.UUID | None, client: ClientRecord) -> uuid.UUID:
     """The visitor's thread, or a new one when there is none or it belongs to another client."""
@@ -38,7 +29,7 @@ async def _thread_for_client(thread_id: uuid.UUID | None, client: ClientRecord) 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
     graph = request.app.state.agent_graph
-    client = await _active_client(request_body.client)
+    client = await get_active_client(request_body.client)
     thread_id = str(await _thread_for_client(request_body.thread_id, client))
 
     try:

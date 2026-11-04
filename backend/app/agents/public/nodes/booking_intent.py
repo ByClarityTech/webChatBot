@@ -1,8 +1,11 @@
+from uuid import UUID
+
 from langchain_core.messages import AIMessage
 
 from app.agents.public.state import PublicAssistantState
 from app.core.config import get_settings
 from app.core.tracing import tag_langsmith_run
+from app.integrations.google.oauth import is_google_calendar_connected
 
 BOOKING_INVITE_REPLY = (
     "I'd be happy to help you schedule a meeting! "
@@ -13,6 +16,12 @@ BOOKING_INVITE_REPLY = (
 BOOKING_DISABLED_REPLY = (
     "I can help with questions about our services. "
     "For scheduling, please use the Book a Demo button on this page."
+)
+
+# The client has no healthy Google Calendar connection (PRD FR-10: no booking button then).
+BOOKING_UNAVAILABLE_REPLY = (
+    "Online booking isn't available right now. "
+    "Please contact us directly and we'll help you find a time."
 )
 
 OPEN_BOOKING_FORM_ACTION = "open_booking_form"
@@ -30,7 +39,7 @@ def _configure_langsmith() -> None:
     os.environ.setdefault("LANGCHAIN_PROJECT", settings.langsmith_project)
 
 
-def booking_intent_node(state: PublicAssistantState) -> dict:
+async def booking_intent_node(state: PublicAssistantState) -> dict:
     _configure_langsmith()
     tag_langsmith_run(agent="public", node="booking_intent", intent="booking")
 
@@ -38,6 +47,12 @@ def booking_intent_node(state: PublicAssistantState) -> dict:
     if not settings.booking_enabled:
         return {
             "messages": [AIMessage(content=BOOKING_DISABLED_REPLY)],
+            "booking_action": None,
+        }
+
+    if not await is_google_calendar_connected(UUID(state["client_id"])):
+        return {
+            "messages": [AIMessage(content=BOOKING_UNAVAILABLE_REPLY)],
             "booking_action": None,
         }
 

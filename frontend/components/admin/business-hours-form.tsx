@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { ClientPicker, useClientScope } from "@/components/admin/client-picker";
 import { adminFetch } from "@/lib/admin-api";
 
 export type BusinessHoursSettings = {
@@ -71,6 +72,8 @@ function emptyForm(): Omit<BusinessHoursSettings, "source" | "updated_at"> {
 }
 
 export function BusinessHoursForm() {
+  const clientScope = useClientScope();
+  const { needsClient, withClient } = clientScope;
   const [form, setForm] = useState(emptyForm());
   const [source, setSource] = useState<string>("env");
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
@@ -81,7 +84,7 @@ export function BusinessHoursForm() {
 
   const loadSettings = useCallback(async () => {
     setError(null);
-    const response = await adminFetch("/api/v1/admin/settings/business-hours");
+    const response = await adminFetch(withClient("/api/v1/admin/settings/business-hours"));
     if (!response.ok) {
       throw new Error(await parseError(response));
     }
@@ -96,13 +99,19 @@ export function BusinessHoursForm() {
     });
     setSource(data.source);
     setUpdatedAt(data.updated_at);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- withClient changes with scope
+  }, [clientScope.scope]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
+      if (needsClient) {
+        setLoading(false);
+        return;
+      }
       setLoading(true);
+      setSuccess(null);
       try {
         await loadSettings();
       } catch (err) {
@@ -120,7 +129,7 @@ export function BusinessHoursForm() {
     return () => {
       cancelled = true;
     };
-  }, [loadSettings]);
+  }, [loadSettings, needsClient]);
 
   function toggleDay(day: number) {
     setForm((prev) => {
@@ -144,7 +153,7 @@ export function BusinessHoursForm() {
     }
 
     try {
-      const response = await adminFetch("/api/v1/admin/settings/business-hours", {
+      const response = await adminFetch(withClient("/api/v1/admin/settings/business-hours"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
@@ -163,12 +172,33 @@ export function BusinessHoursForm() {
     }
   }
 
+  const picker = <ClientPicker scope={clientScope} id="hours-client" />;
+  if (needsClient) {
+    return (
+      <div className="space-y-4">
+        {picker}
+        <p className="text-sm text-slate-500">Choose a client to see and edit its business hours.</p>
+      </div>
+    );
+  }
   if (loading) {
-    return <p className="text-sm text-slate-500">Loading settings...</p>;
+    return (
+      <div className="space-y-4">
+        {picker}
+        <p className="text-sm text-slate-500">Loading settings...</p>
+      </div>
+    );
   }
 
   return (
     <form onSubmit={handleSubmit} className="max-w-xl space-y-6">
+      {picker}
+      {source === "env" ? (
+        <p className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+          This client has not saved its own hours yet, so the server defaults below are used,
+          including the timezone ({form.timezone}). Save to keep them for this client.
+        </p>
+      ) : null}
       {error ? (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
@@ -288,7 +318,7 @@ export function BusinessHoursForm() {
           {saving ? "Saving..." : "Save settings"}
         </button>
         <p className="text-xs text-slate-500">
-          Source: {source}
+          Source: {source === "env" ? "server defaults" : "saved for this client"}
           {updatedAt ? ` · Updated ${new Date(updatedAt).toLocaleString()}` : null}
         </p>
       </div>

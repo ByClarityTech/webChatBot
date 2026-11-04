@@ -5,5 +5,9 @@ class WidgetConfigResponse(BaseModel):
     """What a client's chat widget needs before the first message. Public: nothing private."""
 
     client: str
+    # Shown in the widget header and its question buttons.
+    name: str
     # The client's default questions, in display order (up to 4; may be empty).
     default_questions: list[str]
+    # Whether the widget may offer booking (calendar connected and healthy).
+    booking_available: bool = False

@@ -328,12 +328,10 @@ Configure `frontend/.env.local`:
 
 ```bash
 NEXT_PUBLIC_API_URL=https://api.yourcompany.com
-NEXT_PUBLIC_CHAT_TITLE=                    # empty = no header title
-NEXT_PUBLIC_CHAT_SUBTITLE=                 # empty = no subtitle
 NEXT_PUBLIC_CHAT_GREETING=Hi! How can we help you today?
 ```
 
-Leave `NEXT_PUBLIC_CHAT_TITLE` and `NEXT_PUBLIC_CHAT_SUBTITLE` empty for a clean widget with no product name. The chat UI does not show source filenames to visitors. The question buttons under the greeting are each client's default questions, set on the **FAQs** page; these environment variables are still the same for every client.
+The header shows the client's name (from the Clients page) with "AI Assistant" under it. The three question buttons under the greeting are fixed questions with the client's name filled in (`suggestedQuestionTemplates` in `frontend/lib/chat-config.ts`). The FAQ default questions are not shown in the widget at the moment. The greeting and placeholder come from these environment variables and are the same for every client. The chat UI does not show source filenames to visitors.
 
 ## Admin dashboard
 

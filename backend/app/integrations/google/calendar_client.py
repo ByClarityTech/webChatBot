@@ -1,13 +1,20 @@
 import logging
 from datetime import datetime
+from uuid import UUID
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from app.integrations.google.oauth import GoogleOAuthError, get_valid_credentials
+from app.integrations.google.oauth import (
+    GoogleOAuthError,
+    get_client_calendar,
+    mark_needs_reconnect,
+)
 from app.integrations.google.schemas import BusyPeriod, FreeBusyResult
 
 logger = logging.getLogger(__name__)
+
+# Every call works on one client's own Google connection and calendar.
 
 
 class GoogleCalendarError(Exception):
@@ -17,14 +24,28 @@ class GoogleCalendarError(Exception):
 def _google_api_error_message(exc: HttpError) -> str:
     status = exc.resp.status if exc.resp is not None else 0
     if status in (401, 403):
-        return (
-            "Google Calendar access failed. "
-            "Reconnect via GET /api/v1/admin/google/oauth/start."
-        )
+        return "Google Calendar access failed. Reconnect the calendar on the Calendar page."
     if status >= 500:
         return "Google Calendar is temporarily unavailable. Please try again later."
     reason = getattr(exc, "reason", None) or "request failed"
     return f"Google Calendar API error: {reason}"
+
+
+async def _handle_http_error(client_id: UUID, exc: HttpError, action: str) -> GoogleCalendarError:
+    logger.exception("Google Calendar %s failed for client %s", action, client_id)
+    # 401: Google no longer accepts these credentials.
+    if exc.resp is not None and exc.resp.status == 401:
+        await mark_needs_reconnect(client_id, f"Google answered 401 during {action}")
+    return GoogleCalendarError(_google_api_error_message(exc))
+
+
+async def _calendar(client_id: UUID):
+    try:
+        credentials, calendar_id = await get_client_calendar(client_id)
+    except GoogleOAuthError as exc:
+        raise GoogleCalendarError(str(exc)) from exc
+    service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
+    return service, calendar_id
 
 
 def _parse_google_datetime(value: str) -> datetime:
@@ -35,18 +56,13 @@ def _parse_google_datetime(value: str) -> datetime:
 
 async def query_freebusy(
     *,
-    calendar_id: str,
+    client_id: UUID,
     time_min: datetime,
     time_max: datetime,
     timezone: str,
 ) -> FreeBusyResult:
+    service, calendar_id = await _calendar(client_id)
     try:
-        credentials = await get_valid_credentials()
-    except GoogleOAuthError as exc:
-        raise GoogleCalendarError(str(exc)) from exc
-
-    try:
-        service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
         body = {
             "timeMin": time_min.isoformat(),
             "timeMax": time_max.isoformat(),
@@ -55,8 +71,7 @@ async def query_freebusy(
         }
         response = service.freebusy().query(body=body).execute()
     except HttpError as exc:
-        logger.exception("Google Calendar freebusy query failed")
-        raise GoogleCalendarError(_google_api_error_message(exc)) from exc
+        raise await _handle_http_error(client_id, exc, "freebusy query") from exc
     except Exception as exc:
         logger.exception("Google Calendar freebusy query failed")
         raise GoogleCalendarError("Google Calendar API request failed") from exc
@@ -74,7 +89,7 @@ async def query_freebusy(
 
 async def create_calendar_event(
     *,
-    calendar_id: str,
+    client_id: UUID,
     summary: str,
     description: str,
     start: datetime,
@@ -82,11 +97,7 @@ async def create_calendar_event(
     attendee_email: str,
     timezone: str,
 ) -> str:
-    try:
-        credentials = await get_valid_credentials()
-    except GoogleOAuthError as exc:
-        raise GoogleCalendarError(str(exc)) from exc
-
+    service, calendar_id = await _calendar(client_id)
     body = {
         "summary": summary,
         "description": description,
@@ -96,15 +107,13 @@ async def create_calendar_event(
     }
 
     try:
-        service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
         event = (
             service.events()
             .insert(calendarId=calendar_id, body=body, sendUpdates="all")
             .execute()
         )
     except HttpError as exc:
-        logger.exception("Google Calendar event creation failed")
-        raise GoogleCalendarError(_google_api_error_message(exc)) from exc
+        raise await _handle_http_error(client_id, exc, "event creation") from exc
     except Exception as exc:
         logger.exception("Google Calendar event creation failed")
         raise GoogleCalendarError("Google Calendar API request failed") from exc
@@ -112,53 +121,9 @@ async def create_calendar_event(
     return event.get("id", "")
 
 
-async def delete_calendar_event(*, calendar_id: str, event_id: str) -> None:
+async def delete_calendar_event(*, client_id: UUID, event_id: str) -> None:
+    service, calendar_id = await _calendar(client_id)
     try:
-        credentials = await get_valid_credentials()
-    except GoogleOAuthError as exc:
-        raise GoogleCalendarError(str(exc)) from exc
-
-    try:
-        service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
         service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
     except HttpError as exc:
-        logger.exception("Google Calendar event deletion failed")
-        raise GoogleCalendarError(_google_api_error_message(exc)) from exc
-
-
-async def list_events(
-    *,
-    calendar_id: str,
-    time_min: datetime,
-    time_max: datetime,
-    timezone: str,
-    max_results: int = 50,
-) -> list[dict]:
-    try:
-        credentials = await get_valid_credentials()
-    except GoogleOAuthError as exc:
-        raise GoogleCalendarError(str(exc)) from exc
-
-    try:
-        service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
-        response = (
-            service.events()
-            .list(
-                calendarId=calendar_id,
-                timeMin=time_min.isoformat(),
-                timeMax=time_max.isoformat(),
-                timeZone=timezone,
-                singleEvents=True,
-                orderBy="startTime",
-                maxResults=max_results,
-            )
-            .execute()
-        )
-    except HttpError as exc:
-        logger.exception("Google Calendar events list failed")
-        raise GoogleCalendarError(_google_api_error_message(exc)) from exc
-    except Exception as exc:
-        logger.exception("Google Calendar events list failed")
-        raise GoogleCalendarError("Google Calendar API request failed") from exc
-
-    return response.get("items", [])
+        raise await _handle_http_error(client_id, exc, "event deletion") from exc

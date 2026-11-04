@@ -1,7 +1,8 @@
 from dataclasses import dataclass
+from uuid import UUID
 
 from app.core.config import get_settings
-from app.db.models.admin_settings import BusinessHoursRecord, get_business_hours
+from app.db.models.admin_settings import BusinessHoursRecord, get_client_business_hours
 
 
 @dataclass(frozen=True)
@@ -15,7 +16,8 @@ class BusinessHoursConfig:
     source: str
 
 
-def _from_env() -> BusinessHoursConfig:
+def default_business_hours() -> BusinessHoursConfig:
+    """The .env hours: used for a client that has not saved its own."""
     settings = get_settings()
     return BusinessHoursConfig(
         business_days=settings.business_days_list,
@@ -40,8 +42,9 @@ def _from_record(record: BusinessHoursRecord) -> BusinessHoursConfig:
     )
 
 
-async def get_business_hours_config() -> BusinessHoursConfig:
-    record = await get_business_hours()
+async def get_business_hours_config(client_id: UUID) -> BusinessHoursConfig:
+    """The client's saved hours and timezone, or the .env defaults if it has none."""
+    record = await get_client_business_hours(client_id)
     if record is None:
-        return _from_env()
+        return default_business_hours()
     return _from_record(record)

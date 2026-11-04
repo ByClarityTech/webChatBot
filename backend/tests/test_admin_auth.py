@@ -1,5 +1,3 @@
-from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from auth_helpers import signed_in, signed_out
@@ -19,7 +17,6 @@ from app.api.routes.admin import (
 from app.core.csrf import CSRFOriginMiddleware
 from app.core.permissions import AREA_ACCESS, Area
 from app.core.roles import UserType
-from app.integrations.google.oauth import GoogleOAuthError
 
 SA, ADMIN, SUPPORT = UserType.super_admin, UserType.admin, UserType.support
 
@@ -160,103 +157,7 @@ async def test_oauth_status_without_session_returns_401(admin_app):
     assert "not signed in" in response.json()["detail"].lower()
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("user_type", [SA, ADMIN, SUPPORT])
-async def test_oauth_status_signed_in_returns_200(admin_app, user_type):
-    with (
-        signed_in(admin_app, user_type),
-        patch(
-            "app.api.routes.admin.google_oauth.is_google_calendar_connected",
-            new_callable=AsyncMock,
-            return_value=False,
-        ),
-    ):
-        transport = ASGITransport(app=admin_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get("/api/v1/admin/google/oauth/status")
-
-    assert response.status_code == 200
-    assert response.json()["connected"] is False
-
-
-@pytest.mark.asyncio
-async def test_oauth_callback_without_auth_does_not_require_session(admin_app):
-    mock_settings = MagicMock()
-    mock_settings.admin_frontend_url = "http://localhost:3000"
-    with (
-        signed_out(admin_app),
-        patch("app.api.routes.admin.google_oauth.get_settings", return_value=mock_settings),
-    ):
-        transport = ASGITransport(app=admin_app)
-        async with AsyncClient(
-            transport=transport, base_url="http://test", follow_redirects=False
-        ) as client:
-            response = await client.get("/api/v1/admin/google/oauth/callback")
-
-    assert response.status_code == 307
-    assert (
-        response.headers["location"]
-        == "http://localhost:3000/admin/calendar?error=Missing%20authorization%20code"
-    )
-
-
-@pytest.mark.asyncio
-async def test_oauth_status_refresh_failure_returns_refresh_error(admin_app):
-    expired = datetime.now(UTC) - timedelta(minutes=5)
-    record = MagicMock()
-    record.calendar_id = "primary"
-    record.token_expiry = expired
-    record.connected_email = "admin@example.com"
-
-    with (
-        signed_in(admin_app, ADMIN),
-        patch(
-            "app.api.routes.admin.google_oauth.is_google_calendar_connected",
-            new_callable=AsyncMock,
-            return_value=True,
-        ),
-        patch(
-            "app.api.routes.admin.google_oauth.get_valid_credentials",
-            new_callable=AsyncMock,
-            side_effect=GoogleOAuthError(
-                "Google Calendar refresh failed. Please reconnect your calendar."
-            ),
-        ),
-    ):
-        transport = ASGITransport(app=admin_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get("/api/v1/admin/google/oauth/status")
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["connected"] is False
-    assert "refresh failed" in payload["refresh_error"].lower()
-
-
-@pytest.mark.asyncio
-async def test_oauth_callback_success_redirects_to_frontend(admin_app):
-    mock_settings = MagicMock()
-    mock_settings.admin_frontend_url = "http://localhost:3000"
-    mock_record = MagicMock()
-    mock_record.calendar_id = "primary"
-    mock_record.connected_email = "admin@example.com"
-
-    with (
-        patch("app.api.routes.admin.google_oauth.get_settings", return_value=mock_settings),
-        patch(
-            "app.api.routes.admin.google_oauth.exchange_code_and_store",
-            new_callable=AsyncMock,
-            return_value=mock_record,
-        ),
-    ):
-        transport = ASGITransport(app=admin_app)
-        async with AsyncClient(
-            transport=transport, base_url="http://test", follow_redirects=False
-        ) as client:
-            response = await client.get("/api/v1/admin/google/oauth/callback?code=abc&state=xyz")
-
-    assert response.status_code == 307
-    assert response.headers["location"] == "http://localhost:3000/admin/calendar?connected=1"
+# Signed-in Google OAuth behaviour: tests/test_oauth.py.
 
 
 # ---------------------------------------------------------------- CSRF

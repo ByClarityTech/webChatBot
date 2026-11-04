@@ -59,6 +59,7 @@ function SummaryCard({
 export default function AdminDashboardPage() {
   const user = useAdminUser();
   const canOpenDocuments = canAccess(user.user_type, "documents");
+  const isSuperAdmin = user.user_type === "super_admin";
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -117,26 +118,34 @@ export default function AdminDashboardPage() {
         <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <SummaryCard
             title={
-              user.user_type === "super_admin" ? "Indexed documents (all clients)" : "Indexed documents"
+              isSuperAdmin ? "Indexed documents (all clients)" : "Indexed documents"
             }
             value={String(summary.document_count)}
             href={canOpenDocuments ? "/admin/documents" : undefined}
             hint={canOpenDocuments ? "Open Documents to upload or remove files" : undefined}
           />
           <SummaryCard
-            title="Bookings today"
+            title={isSuperAdmin ? "Bookings today (all clients)" : "Bookings today"}
             value={String(summary.bookings_today)}
             href="/admin/bookings"
-            hint="Slots scheduled for today in your business timezone"
+            hint={
+              isSuperAdmin
+                ? "Confirmed bookings for today, server timezone"
+                : "Confirmed bookings for today in your business timezone"
+            }
           />
           <SummaryCard
             title="Google Calendar"
             value={summary.calendar_connected ? "Connected" : "Not connected"}
             href="/admin/calendar"
             hint={
-              summary.calendar_connected
-                ? "Calendar linked for availability and bookings"
-                : "Connect calendar to enable booking"
+              isSuperAdmin
+                ? summary.calendar_connected
+                  ? "At least one client has a connected calendar"
+                  : "No client has a connected calendar"
+                : summary.calendar_connected
+                  ? "Calendar linked for availability and bookings"
+                  : "Connect calendar to enable booking"
             }
           />
         </div>

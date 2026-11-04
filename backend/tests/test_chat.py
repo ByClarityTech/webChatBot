@@ -27,7 +27,7 @@ def clients(monkeypatch):
     async def claim_chat_thread(thread_id, client_id):
         return threads.setdefault(thread_id, client_id)
 
-    monkeypatch.setattr("app.api.routes.chat.get_client_by_slug", get_client_by_slug)
+    monkeypatch.setattr("app.services.public_client.get_client_by_slug", get_client_by_slug)
     monkeypatch.setattr("app.api.routes.chat.claim_chat_thread", claim_chat_thread)
     return known
 

@@ -3,6 +3,17 @@ from uuid import UUID
 from app.db.session import get_db_connection
 
 
+async def get_chat_thread_client(thread_id: UUID) -> UUID | None:
+    """The client a thread belongs to, or None if there is no such thread."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT client_id FROM chat_threads WHERE thread_id = %s", (thread_id,)
+            )
+            row = await cur.fetchone()
+    return row[0] if row else None
+
+
 async def claim_chat_thread(thread_id: UUID, client_id: UUID) -> UUID:
     """Bind a new thread to client_id, or return the client an existing thread belongs to.
 

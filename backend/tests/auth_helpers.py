@@ -45,3 +45,17 @@ def signed_out(app: FastAPI):
     """No session: get_current_user runs for real and finds no cookie (401)."""
     app.dependency_overrides.pop(get_current_user, None)
     yield
+
+
+def make_client_record(slug: str = "example", *, client_id=None, status: str = "active"):
+    """A ClientRecord for tests that look clients up by id or slug."""
+    from app.db.models.client import ClientRecord
+
+    return ClientRecord(
+        id=client_id or uuid4(),
+        name=slug.replace("-", " ").title(),
+        slug=slug,
+        status=status,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )

@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
+from uuid import UUID
 
 from cryptography.fernet import Fernet, InvalidToken
 from google.auth.transport.requests import Request
@@ -8,16 +9,19 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 
 from app.core.config import get_settings
-from app.db.models.oauth_pending import (
-    cleanup_expired_oauth_pending_states,
-    consume_oauth_pending_state,
-    save_oauth_pending_state,
-)
 from app.db.models.google_token import (
+    STATUS_OK,
     GoogleTokenRecord,
-    get_google_token,
-    update_google_token_access,
-    upsert_google_token,
+    get_client_google_token,
+    mark_client_google_token_needs_reconnect,
+    save_client_google_token,
+    update_client_google_token_access,
+)
+from app.db.models.oauth_pending import (
+    OAuthPendingFlow,
+    cleanup_expired_oauth_pending_states,
+    consume_oauth_pending_flow,
+    save_oauth_pending_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,18 +86,13 @@ def create_oauth_flow() -> Flow:
     )
 
 
-def build_authorization_url() -> tuple[str, str]:
-    """Sync helper — prefer start_oauth_flow() for the full PKCE-persisted flow."""
-    flow = create_oauth_flow()
-    auth_url, state = flow.authorization_url(
-        access_type="offline",
-        prompt="consent",
-    )
-    return _ensure_scope_in_auth_url(auth_url), state
+class NeedsReconnectError(GoogleOAuthError):
+    """Google refused the stored grant (revoked or expired); an admin must connect again."""
 
 
-async def start_oauth_flow() -> tuple[str, str]:
-    """Build Google consent URL and persist PKCE verifier for the callback."""
+async def start_oauth_flow(*, client_id: UUID, user_id: UUID) -> tuple[str, str]:
+    """Build the Google consent URL. The state is stored with the PKCE verifier, the client to
+    connect and the user who started, so the public callback can only finish this flow."""
     flow = create_oauth_flow()
     auth_url, state = flow.authorization_url(
         access_type="offline",
@@ -106,7 +105,7 @@ async def start_oauth_flow() -> tuple[str, str]:
         raise GoogleOAuthError("PKCE code verifier was not generated for OAuth flow")
 
     await cleanup_expired_oauth_pending_states()
-    await save_oauth_pending_state(state, code_verifier)
+    await save_oauth_pending_state(state, code_verifier, client_id=client_id, user_id=user_id)
     return auth_url, state
 
 
@@ -143,17 +142,19 @@ def _expiry_from_credentials(credentials: Credentials) -> datetime:
     return expiry.astimezone(timezone.utc)
 
 
-async def exchange_code_and_store(code: str, state: str) -> GoogleTokenRecord:
+async def take_pending_flow(state: str) -> OAuthPendingFlow:
+    """The flow this state was issued for. Single use; raises if unknown or expired."""
+    flow = await consume_oauth_pending_flow(state)
+    if flow is None or flow.client_id is None or flow.user_id is None:
+        raise GoogleOAuthError("This connect link has expired or was already used. Start again.")
+    return flow
+
+
+async def exchange_code_and_store(code: str, pending: OAuthPendingFlow) -> GoogleTokenRecord:
+    """Swap the code for tokens and store them as the pending flow's client's connection."""
     settings = get_settings()
-
-    code_verifier = await consume_oauth_pending_state(state)
-    if not code_verifier:
-        raise GoogleOAuthError(
-            "Invalid or expired OAuth state. Start again from /api/v1/admin/google/oauth/start"
-        )
-
     flow = create_oauth_flow()
-    flow.code_verifier = code_verifier
+    flow.code_verifier = pending.code_verifier
 
     try:
         flow.fetch_token(code=code)
@@ -181,7 +182,8 @@ async def exchange_code_and_store(code: str, state: str) -> GoogleTokenRecord:
     except Exception:
         logger.warning("Could not fetch calendar metadata after OAuth", exc_info=True)
 
-    await upsert_google_token(
+    return await save_client_google_token(
+        pending.client_id,
         access_token=credentials.token or "",
         refresh_token_encrypted=refresh_encrypted,
         token_expiry=token_expiry,
@@ -189,36 +191,48 @@ async def exchange_code_and_store(code: str, state: str) -> GoogleTokenRecord:
         connected_email=connected_email,
     )
 
-    record = await get_google_token()
-    if record is None:
-        raise GoogleOAuthError("Failed to persist Google OAuth tokens")
-    return record
 
+async def get_client_calendar(client_id: UUID) -> tuple[Credentials, str]:
+    """Credentials and calendar id of the client's connection, refreshed if needed.
 
-async def get_valid_credentials() -> Credentials:
-    record = await get_google_token()
+    Raises GoogleOAuthError when the client has none, NeedsReconnectError when Google has
+    refused the grant (the connection is then marked needs_reconnect)."""
+    record = await get_client_google_token(client_id)
     if record is None:
         raise GoogleOAuthError("Google Calendar is not connected")
+    if record.status != STATUS_OK:
+        raise NeedsReconnectError(
+            "Google Calendar needs to be connected again: "
+            + (record.last_error or "access was refused")
+        )
 
     credentials = _credentials_from_record(record)
     if credentials.expired:
         if not credentials.refresh_token:
-            raise GoogleOAuthError(
-                "Google Calendar access expired and no refresh token is stored. Please reconnect."
-            )
+            await mark_client_google_token_needs_reconnect(client_id, "No refresh token stored")
+            raise NeedsReconnectError("Google Calendar access expired. Please reconnect.")
         try:
             credentials.refresh(Request())
         except Exception as exc:
             logger.warning("Google OAuth token refresh failed", exc_info=True)
-            raise GoogleOAuthError(
+            await mark_client_google_token_needs_reconnect(client_id, f"Refresh failed: {exc}")
+            raise NeedsReconnectError(
                 "Google Calendar refresh failed. Please reconnect your calendar."
             ) from exc
-        await update_google_token_access(
+        await update_client_google_token_access(
+            client_id,
             access_token=credentials.token or "",
             token_expiry=_expiry_from_credentials(credentials),
         )
-    return credentials
+    return credentials, record.calendar_id
 
 
-async def is_google_calendar_connected() -> bool:
-    return await get_google_token() is not None
+async def mark_needs_reconnect(client_id: UUID, error: str) -> None:
+    """For callers that get a 401 from Google with otherwise valid-looking credentials."""
+    await mark_client_google_token_needs_reconnect(client_id, error)
+
+
+async def is_google_calendar_connected(client_id: UUID) -> bool:
+    """A connection exists and Google has not refused it."""
+    record = await get_client_google_token(client_id)
+    return record is not None and record.status == STATUS_OK

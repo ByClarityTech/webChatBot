@@ -7,6 +7,8 @@ import { createBooking } from "@/lib/booking-api";
 import { SlotPicker } from "./slot-picker";
 
 type BookingFormProps = {
+  /** Slug of the client whose widget this is. */
+  client: string;
   threadId: string | null;
   onSuccess: (message: string) => void;
   onCancel?: () => void;
@@ -16,7 +18,7 @@ function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
-export function BookingForm({ threadId, onSuccess, onCancel }: BookingFormProps) {
+export function BookingForm({ client, threadId, onSuccess, onCancel }: BookingFormProps) {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
@@ -69,6 +71,7 @@ export function BookingForm({ threadId, onSuccess, onCancel }: BookingFormProps)
 
     try {
       const response = await createBooking({
+        client,
         name: name.trim(),
         phone: phone.trim(),
         email: email.trim(),
@@ -164,7 +167,7 @@ export function BookingForm({ threadId, onSuccess, onCancel }: BookingFormProps)
         </div>
       </div>
 
-      <SlotPicker selectedSlot={selectedSlot} onSelect={handleSlotSelect} />
+      <SlotPicker client={client} selectedSlot={selectedSlot} onSelect={handleSlotSelect} />
       {fieldErrors.slot && <p className="text-xs text-red-600">{fieldErrors.slot}</p>}
 
       {error && (

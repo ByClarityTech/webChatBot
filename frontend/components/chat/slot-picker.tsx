@@ -5,6 +5,8 @@ import { useEffect, useState } from "react";
 import { getAvailability } from "@/lib/booking-api";
 
 type SlotPickerProps = {
+  /** Slug of the client whose open times to show. */
+  client: string;
   selectedSlot: string | null;
   onSelect: (slotStart: string) => void;
 };
@@ -29,7 +31,7 @@ function formatSlotLabel(start: string, end: string, timezone: string): string {
   return `${startLabel} – ${endLabel}`;
 }
 
-export function SlotPicker({ selectedSlot, onSelect }: SlotPickerProps) {
+export function SlotPicker({ client, selectedSlot, onSelect }: SlotPickerProps) {
   const [date, setDate] = useState(todayDateString);
   const [timezone, setTimezone] = useState<string>("UTC");
   const [slots, setSlots] = useState<Array<{ start: string; end: string }>>([]);
@@ -46,7 +48,7 @@ export function SlotPicker({ selectedSlot, onSelect }: SlotPickerProps) {
       onSelect("");
 
       try {
-        const response = await getAvailability(date);
+        const response = await getAvailability(client, date);
         if (cancelled) {
           return;
         }
@@ -92,7 +94,9 @@ export function SlotPicker({ selectedSlot, onSelect }: SlotPickerProps) {
       </div>
 
       <div>
-        <p className="mb-2 text-xs font-medium text-slate-600">Available times</p>
+        <p className="mb-2 text-xs font-medium text-slate-600">
+          Available times{slots.length > 0 ? ` (${timezone})` : ""}
+        </p>
 
         {loading && (
           <p className="text-sm text-slate-500" aria-live="polite">

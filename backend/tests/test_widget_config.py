@@ -33,8 +33,14 @@ def app(monkeypatch):
     async def list_default_questions(client_id):
         return defaults.get(client_id, [])
 
-    monkeypatch.setattr(widget, "get_client_by_slug", get_client_by_slug)
+    monkeypatch.setattr("app.services.public_client.get_client_by_slug", get_client_by_slug)
     monkeypatch.setattr(widget, "list_default_questions", list_default_questions)
+    connected = {clients["clinic"].id}
+
+    async def is_google_calendar_connected(client_id):
+        return client_id in connected
+
+    monkeypatch.setattr(widget, "is_google_calendar_connected", is_google_calendar_connected)
     test_app = FastAPI()
     test_app.include_router(widget.router, prefix="/api/v1")
     return test_app
@@ -50,8 +56,18 @@ async def test_returns_the_clients_default_questions_in_order(app):
     assert response.status_code == 200
     assert response.json() == {
         "client": "clinic",
+        "name": "Clinic",
         "default_questions": ["Are you open on Sunday?", "Do you take insurance?"],
+        "booking_available": True,
     }
+
+
+async def test_booking_also_needs_online_booking_switched_on(app, monkeypatch):
+    monkeypatch.setattr(widget, "get_settings", lambda: type("S", (), {"booking_enabled": True})())
+    clinic = (await get_config(app, client="clinic")).json()
+    assert clinic["booking_available"] is True
+    monkeypatch.setattr(widget, "get_settings", lambda: type("S", (), {"booking_enabled": False})())
+    assert (await get_config(app, client="clinic")).json()["booking_available"] is False
 
 
 @pytest.mark.parametrize("slug", ["unknown", "paused"])

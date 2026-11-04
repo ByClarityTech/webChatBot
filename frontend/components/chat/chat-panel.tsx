@@ -69,8 +69,8 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
   // The client whose assistant this is, from the page URL (?client=...).
   const [clientSlug, setClientSlug] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
-  // The client's default questions (its starred FAQs), from the widget config.
-  const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([]);
+  // The client's display name, from the widget config; shown in the header and buttons.
+  const [clientName, setClientName] = useState<string | null>(null);
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const prevMessageCountRef = useRef(0);
@@ -86,14 +86,14 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
         setThreadId(storedThread);
       }
       setMessages(loadStoredMessages(slug));
-      // Checks the client before the visitor types, and loads its default questions.
+      // Checks the client before the visitor types, and loads its name.
       getWidgetConfig(slug)
-        .then((config) => setSuggestedQuestions(config.default_questions))
+        .then((config) => setClientName(config.name))
         .catch((configError) => {
           if (configError instanceof ChatUnavailableError) {
             setUnavailable(true);
           }
-          // Any other failure: chat still works, just without default questions.
+          // Any other failure: chat still works, just without the name and buttons.
         });
     }
     setHydrated(true);
@@ -188,19 +188,21 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
     await sendUserMessage(input);
   }
 
-  const showHeader = Boolean(chatConfig.title || chatConfig.subtitle);
   const isEmpty = messages.length === 0 && !loading;
+  const suggestedQuestions = clientName
+    ? chatConfig.suggestedQuestionTemplates.map((template) =>
+        template.replaceAll("{clientName}", clientName),
+      )
+    : [];
+  // Full page: a fixed-size card. Embedded: fills the iframe the client's site sets.
+  const frameClass = isEmbed
+    ? "flex h-full min-h-0 flex-col overflow-hidden bg-white"
+    : "mx-auto flex h-[620px] w-full max-w-[580px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm";
 
   if (unavailable) {
     // No or unknown client, or the client is suspended: nothing to chat with.
     return (
-      <div
-        className={
-          isEmbed
-            ? "flex h-full min-h-0 flex-col items-center justify-center bg-white p-6"
-            : "flex h-[min(640px,80vh)] flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
-        }
-      >
+      <div className={`${frameClass} items-center justify-center p-6`}>
         <p className="text-center text-sm text-slate-500" role="status">
           This assistant is not available.
         </p>
@@ -209,81 +211,20 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
   }
 
   return (
-    <div
-      className={
-        isEmbed
-          ? "flex h-full min-h-0 flex-col bg-white"
-          : "flex h-[min(640px,80vh)] flex-col rounded-2xl border border-slate-200 bg-white shadow-sm"
-      }
-    >
-      {showHeader && (
-        <div
-          style={{
-            background: "linear-gradient(135deg, rgb(43, 60, 247), rgb(91, 142, 255))",
-            padding: "8px 16px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            flexShrink: 0,
-            borderTopLeftRadius: "16px",
-            borderTopRightRadius: "16px",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <div
-              style={{
-                width: "50px",
-                height: "50px",
-                borderRadius: "50%",
-                background: "rgb(255, 255, 255)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <img src="/bot-profile.png" alt="Sentiq" style={{ width: "100%", height: "100%" }} />
-            </div>
-            <div style={{ display: "flex", flexDirection: "column" }}>
-              <span
-                style={{
-                  color: "rgb(255, 255, 255)",
-                  fontSize: "15px",
-                  fontWeight: 600,
-                  letterSpacing: "0.02em",
-                  lineHeight: 1.2,
-                }}
-              >
-                Sentiq
-              </span>
-              <span
-                style={{
-                  color: "rgba(255, 255, 255, 0.75)",
-                  fontSize: "11px",
-                  fontWeight: 400,
-                  letterSpacing: "0.01em",
-                  lineHeight: 1.2,
-                }}
-              >
-                AI Assistant
-              </span>
-            </div>
-          </div>
-          <button
-            aria-label="Close chat"
-            style={{
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              padding: "4px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              borderRadius: "6px",
-              transition: "background 0.2s",
-            }}
-          />
+    <div className={frameClass}>
+      <div className="flex shrink-0 items-center gap-3 bg-[#3B82F6] px-4 py-3">
+        <img
+          src="/bot-profile.png"
+          alt=""
+          className="h-11 w-11 shrink-0 rounded-full border border-white bg-white object-cover"
+        />
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate text-[15px] font-bold leading-tight text-white">
+            {clientName ?? ""}
+          </span>
+          <span className="text-xs leading-tight text-blue-100">AI Assistant</span>
         </div>
-      )}
+      </div>
 
       <div
         ref={messagesContainerRef}
@@ -292,7 +233,7 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
         }`}
       >
         {isEmpty && (
-          <div className="flex w-full max-w-sm flex-col items-center gap-4">
+          <div className="flex w-full flex-col items-center gap-4">
             {chatConfig.greeting && (
               <p className="text-center text-sm leading-relaxed text-slate-500">
                 {chatConfig.greeting}
@@ -340,9 +281,10 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
         )}
       </div>
 
-      {showBookingForm && (
+      {showBookingForm && clientSlug && (
         <div className="max-h-[min(45vh,360px)] shrink-0 overflow-y-auto border-t border-slate-200 bg-white px-3 py-3">
           <BookingForm
+            client={clientSlug}
             threadId={threadId}
             onSuccess={handleBookingSuccess}
             onCancel={() => setShowBookingForm(false)}
@@ -352,11 +294,7 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
 
       <form
         onSubmit={handleSubmit}
-        className={`shrink-0 border-t border-slate-200 bg-white ${isEmbed ? "p-3" : "p-2"}`}
-        style={{
-          borderBottomLeftRadius: isEmbed ? undefined : "16px",
-          borderBottomRightRadius: isEmbed ? undefined : "16px",
-        }}
+        className="shrink-0 border-t border-slate-200 bg-white p-3"
       >
         {error && <p className="mb-2 text-xs text-red-600">{error}</p>}
         <div className="flex gap-2">
@@ -370,7 +308,7 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
           <button
             type="submit"
             disabled={loading || !input.trim()}
-            className="shrink-0 rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+            className="shrink-0 rounded-xl bg-[#6B7280] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#4B5563] disabled:cursor-not-allowed disabled:opacity-50"
           >
             Send
           </button>

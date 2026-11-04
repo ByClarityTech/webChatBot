@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { ClientPicker, useClientScope } from "@/components/admin/client-picker";
 import { adminFetch } from "@/lib/admin-api";
 
 export type AdminBooking = {
@@ -60,6 +61,8 @@ async function parseError(response: Response): Promise<string> {
 }
 
 export function BookingsTable() {
+  const clientScope = useClientScope();
+  const { needsClient, withClient } = clientScope;
   const [bookings, setBookings] = useState<AdminBooking[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -87,6 +90,14 @@ export function BookingsTable() {
       params.set("to", `${toDate}T23:59:59`);
     }
 
+    if (needsClient) {
+      setBookings([]);
+      setTotal(0);
+      return;
+    }
+    if (clientScope.scope) {
+      params.set("client_id", clientScope.scope);
+    }
     const response = await adminFetch(`/api/v1/admin/bookings?${params.toString()}`);
     if (!response.ok) {
       throw new Error(await parseError(response));
@@ -94,7 +105,7 @@ export function BookingsTable() {
     const data = (await response.json()) as BookingsResponse;
     setBookings(data.bookings);
     setTotal(data.total);
-  }, [offset, statusFilter, fromDate, toDate]);
+  }, [offset, statusFilter, fromDate, toDate, needsClient, clientScope.scope]);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,7 +148,7 @@ export function BookingsTable() {
     setSuccess(null);
 
     try {
-      const response = await adminFetch(`/api/v1/admin/bookings/${booking.id}`, {
+      const response = await adminFetch(withClient(`/api/v1/admin/bookings/${booking.id}`), {
         method: "PATCH",
       });
       if (!response.ok) {
@@ -160,6 +171,7 @@ export function BookingsTable() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end gap-4">
+        <ClientPicker scope={clientScope} id="bookings-client" />
         <div>
           <label className="block text-xs font-medium text-slate-600">From date</label>
           <input
@@ -222,7 +234,13 @@ export function BookingsTable() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {loading ? (
+            {needsClient ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
+                  Choose a client to see its bookings.
+                </td>
+              </tr>
+            ) : loading ? (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
                   Loading bookings...
