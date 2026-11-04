@@ -112,16 +112,16 @@ Open `http://localhost:3000/?client=<slug>`, or the widget view at `http://local
 | `PUT` | `/api/v1/admin/faqs/defaults` | Set the default questions, in order (`faq_ids`, up to 4) |
 | `GET` | `/api/v1/widget/config?client=<slug>` | Public: the client's default questions for the widget (404 if unknown or suspended) |
 | `POST` | `/api/v1/chat` | Chat with RAG + memory for one client (`client` slug required); booking intent returns `action: "open_booking_form"` |
-| `GET` | `/api/v1/admin/google/oauth/start` | Start Google Calendar OAuth (admin) |
-| `GET` | `/api/v1/admin/google/oauth/status` | Google Calendar connection status |
-| `DELETE` | `/api/v1/admin/google/oauth/disconnect` | Disconnect Google Calendar (admin) |
-| `GET` | `/api/v1/admin/settings/business-hours` | Read business hours config (admin) |
-| `PUT` | `/api/v1/admin/settings/business-hours` | Update business hours config (admin) |
+| `GET` | `/api/v1/admin/google/oauth/start` | Start connecting a client's Google Calendar (Super Admin: `?client_id=`) |
+| `GET` | `/api/v1/admin/google/oauth/status` | A client's calendar connection, including `needs_reconnect` |
+| `DELETE` | `/api/v1/admin/google/oauth/disconnect` | Disconnect a client's Google Calendar |
+| `GET` | `/api/v1/admin/settings/business-hours` | A client's business hours and timezone (server defaults until saved) |
+| `PUT` | `/api/v1/admin/settings/business-hours` | Save a client's business hours and timezone |
 | `GET` | `/api/v1/admin/dashboard/summary` | Dashboard summary counts (document count per client; Super Admin: all clients, or `?client_id=`) |
 | `GET` | `/api/v1/admin/audit-log` | Recent admin audit log entries (admin) |
-| `GET` | `/api/v1/booking/availability` | Available booking slots for a date |
-| `POST` | `/api/v1/booking` | Create a booking (name, phone, email, slot) |
-| `GET` | `/api/v1/booking/{booking_id}` | Booking confirmation lookup |
+| `GET` | `/api/v1/booking/availability?client=<slug>&date=` | A client's open slots for a date, in its timezone |
+| `POST` | `/api/v1/booking` | Create a booking for a client (`client` slug, name, phone, email, slot, optional `thread_id`) |
+| `GET` | `/api/v1/booking/{booking_id}?client=<slug>` | Booking confirmation lookup |
 | `GET` | `/docs` | OpenAPI UI |
 
 ### Manage the knowledge base
@@ -154,6 +154,18 @@ There is no "delete everything" route any more: documents are removed one at a t
 
 > These endpoints are for operators/admins and require sign-in. Website visitors only use the chat widget.
 
+### Bookings and calendar from before per-client booking
+
+Bookings, the Google Calendar connection and saved business hours from before migration 0007 have no client. Give them to one client before migration 0008 applies (dry run first, then `--apply`):
+
+```bash
+cd backend
+.venv/Scripts/python ../scripts/assign_bookings_to_client.py --client <slug>
+.venv/Scripts/python ../scripts/assign_bookings_to_client.py --client <slug> --apply
+```
+
+It changes everything in one transaction and refuses anything ambiguous (more than one old connection, a client that already has one, or a booking that clashes with the client's own slots). Migration 0008 then makes the client required and stops with a message if any row still has none.
+
 ### Documents from before per-client documents
 
 Documents indexed before migration 0005 have no client, so the chatbot ignores them and the Documents page does not list them. Give them to one client (dry run first, then `--apply`):
@@ -168,7 +180,7 @@ It creates their `knowledge_sources` rows, tags the chunks and moves the stored 
 
 ## Google Calendar OAuth (Phase B1)
 
-Connect the company Google Calendar so the availability API can read free/busy data. Use the admin UI at `/admin/calendar` or the API directly.
+Each client connects its own Google Calendar, which the availability API reads for busy times and where bookings are created. Use the admin UI at `/admin/calendar` or the API directly. The Google OAuth client (step 1) is set up once for the whole server; the connection itself is per client.
 
 ### 1. Google Cloud Console setup
 
@@ -202,7 +214,9 @@ BOOKING_TIMEZONE=Asia/Kolkata
 
 ### 2. Connect calendar
 
-**Admin UI (recommended):** Sign in at `/admin`, open **Calendar**, and click **Connect Google Calendar**.
+**Admin UI (recommended):** Sign in at `/admin`, open **Calendar** (a Super Admin chooses the client first), and click **Connect Google Calendar**.
+
+Only the signed-in user who clicked Connect can finish the connection, and only for the client they started it for: the connect link (OAuth state) is stored with both, used once, and expires after 15 minutes. Finish the Google sign-in in the same browser where you are signed in to the admin.
 
 **API / curl:**
 
@@ -210,13 +224,16 @@ BOOKING_TIMEZONE=Asia/Kolkata
 # Returns JSON with auth_url — open it in a browser
 curl -b cookies.txt \
   http://localhost:8000/api/v1/admin/google/oauth/start
+# Super Admin: .../oauth/start?client_id=<client uuid>
 
 # Or redirect directly from the browser (requires admin auth)
 curl -L -b cookies.txt \
   "http://localhost:8000/api/v1/admin/google/oauth/start?redirect=true"
 ```
 
-After Google redirects back to the API callback URL, you are sent to `/admin/calendar` in the admin UI.
+After Google redirects back to the API callback URL, you are sent to `/admin/calendar` in the admin UI (a Super Admin comes back to the same client).
+
+If Google later refuses the connection (access revoked, or the refresh token expired), the connection is marked **Reconnect needed**: online booking turns off for that client, visitors get "Online booking isn't available right now", and the Calendar page shows the reason with a **Reconnect Google Calendar** button.
 
 Check connection:
 
@@ -235,12 +252,12 @@ curl -X DELETE -b cookies.txt \
 ### 3. Query availability
 
 ```bash
-curl "http://localhost:8000/api/v1/booking/availability?date=2026-07-01"
+curl "http://localhost:8000/api/v1/booking/availability?client=<slug>&date=2026-07-01"
 ```
 
-Returns `{ "date", "timezone", "slots": [{ "start", "end" }] }`. Slots respect business hours from **Settings** in the admin UI (stored in Postgres), or env vars (`BUSINESS_HOURS_*`, `BUSINESS_DAYS`, slot duration, buffer) when no DB row exists.
+Returns `{ "date", "timezone", "slots": [{ "start", "end" }] }`. Slots follow the client's business hours and timezone from **Settings** in the admin UI, or the env vars (`BUSINESS_HOURS_*`, `BUSINESS_DAYS`, slot duration, buffer, `BOOKING_TIMEZONE`) until the client saves its own. Times are in the client's timezone, and the widget shows that timezone next to them.
 
-If calendar is not connected, availability returns `503` with a clear message.
+If the client has no calendar connected, or it needs reconnecting, availability returns `503` "Online booking isn't available right now". An unknown or suspended client gets `404`.
 
 > OAuth admin routes require a signed-in user (except the public Google callback). See the admin dashboard section below.
 
@@ -250,6 +267,7 @@ Pick a `slot_start` from the availability response, then:
 
 ```powershell
 $body = @{
+  client = "<slug>"
   name = "Jane Doe"
   phone = "+15551234567"
   email = "jane@example.com"
@@ -258,16 +276,21 @@ $body = @{
 Invoke-RestMethod -Uri "http://localhost:8000/api/v1/booking" -Method POST -ContentType "application/json" -Body $body
 ```
 
-The visitor receives a Google Calendar invite at the email provided. Confirm the event in your connected calendar and check status with `GET /api/v1/booking/{booking_id}`.
+The visitor receives a Google Calendar invite at the email provided, from the client's calendar. Check status with `GET /api/v1/booking/{booking_id}?client=<slug>`.
+
+A booking first holds its slot in the database (status `pending`), then creates the Google event, then becomes `confirmed`. A second request for the same slot is refused with `409` before anything is sent to Google, so only one visitor gets an invite. A hold left behind by a crash stops blocking the slot after 3 minutes. Two clients can book the same time, and a cancelled booking frees its slot.
+
+A `thread_id` sent with a booking must be a chat of the same client; another client's (or an unknown) thread is refused with `400`.
 
 ### Booking troubleshooting (Phase B5)
 
 | HTTP | Meaning | Fix |
 |------|---------|-----|
-| `503` | Calendar not connected | Run OAuth flow: `GET /api/v1/admin/google/oauth/start` |
+| `503` | No healthy calendar for this client | Connect (or reconnect) the calendar on the client's **Calendar** page |
+| `404` | Unknown or suspended client | Check the `client` slug |
 | `409` | Slot taken or unavailable | Pick another slot from availability |
 | `429` | Rate limit (`BOOKING_RATE_LIMIT_PER_HOUR`) | Wait and retry |
-| `400` | Past slot or invalid input | Choose a future slot; check email/phone |
+| `400` | Past slot, or a `thread_id` of another client | Choose a future slot; send the widget's own thread |
 
 Rate limit defaults to **10 bookings per hour** per IP (or IP + `thread_id`). Adjust via `BOOKING_RATE_LIMIT_PER_HOUR` in `.env`.
 
@@ -280,7 +303,7 @@ When a visitor asks to schedule a meeting in chat, the agent classifies intent a
 ```bash
 curl -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "I want to book a demo call"}'
+  -d '{"message": "I want to book a demo call", "client": "<slug>"}'
 ```
 
 FAQ questions still use the RAG path and return `sources[]` as before. Use `python scripts/chat_cli.py` to see the `Action:` line when booking intent is detected.
@@ -289,13 +312,13 @@ FAQ questions still use the RAG path and return `sources[]` as before. Use `pyth
 
 With the frontend running and Google Calendar connected (B1):
 
-1. Open [http://localhost:3000](http://localhost:3000) or [http://localhost:3000/embed](http://localhost:3000/embed).
+1. Open `http://localhost:3000/?client=<slug>` or `http://localhost:3000/embed?client=<slug>`.
 2. Ask **"Can I schedule a meeting?"** or **"I want to book a demo call"**.
 3. The assistant reply appears and an inline **Book a meeting** form opens above the chat input.
 4. Enter name, phone, and email; pick a date and an available time slot.
 5. Click **Confirm booking** — a confirmation message appears in the chat and the form closes.
 
-If calendar is not connected, the slot picker shows the API error (503). FAQ questions still work normally without opening the booking form.
+If the client's calendar is not connected (or needs reconnecting), the assistant says online booking isn't available and does not open the form. FAQ questions still work normally.
 
 ## Embed on your company website
 
@@ -403,7 +426,7 @@ The sidebar shows only the pages your role can open. Click your name at the bott
 
 ### Dashboard home (`/admin`)
 
-Summary cards load from `GET /api/v1/admin/dashboard/summary` (single request): indexed document count, bookings scheduled today (business timezone), and Google Calendar connection status. A static panel notes that chat prompts are code-only in `backend/app/agents/public/prompts/`.
+Summary cards load from `GET /api/v1/admin/dashboard/summary` (single request): indexed document count, confirmed bookings today (in the client's timezone), and Google Calendar connection status, all for the user's client. A Super Admin sees totals across clients ("today" in the server timezone; the calendar counts as connected when at least one client's is), or one client with `?client_id=`. A static panel notes that chat prompts are code-only in `backend/app/agents/public/prompts/`.
 
 ```bash
 curl -b cookies.txt \
@@ -432,20 +455,20 @@ In chat, approved FAQ matches are put first in what the model reads and marked a
 
 ### Business hours (`/admin/settings`)
 
-Configure weekly schedule, slot duration, buffer minutes, and timezone. Settings are stored in Postgres and override env defaults for the availability API.
+Configure each client's weekly schedule, slot duration, buffer minutes, and timezone. Super Admins add `?client_id=<client uuid>`; Admin and Support users always work on their own client. Until a client saves its own, the page shows the server defaults (from `.env`) with a note, and those apply to its availability.
 
 ```bash
 curl -b cookies.txt \
-  http://localhost:8000/api/v1/admin/settings/business-hours
+  "http://localhost:8000/api/v1/admin/settings/business-hours?client_id=<client uuid>"
 ```
 
 ### Google Calendar (`/admin/calendar`)
 
-Connect or disconnect Google Calendar from the admin UI. Shows connected account email, calendar ID, and token expiry warning when the access token is near expiration.
+Connect, reconnect or disconnect a client's Google Calendar. Super Admins add `?client_id=<client uuid>`; Admin and Support users always work on their own client. Shows the connected account email, calendar ID, token expiry, and **Reconnect needed** with the reason when Google has refused the connection.
 
 ### Bookings (`/admin/bookings`)
 
-View and cancel appointments created via the chat widget or `POST /api/v1/booking`. Filter by date range and status; cancel removes the Google Calendar event and sets status to `cancelled`.
+View and cancel a client's appointments created via the chat widget or `POST /api/v1/booking`. Super Admins add `?client_id=<client uuid>`; Admin and Support users always work on their own client. Filter by date range and status; cancel removes the event from the client's Google Calendar and sets status to `cancelled`, which frees the slot.
 
 ```bash
 curl -b cookies.txt http://localhost:8000/api/v1/admin/bookings
@@ -470,7 +493,7 @@ Shows your name, email, role and client, and lets you change your password. Chan
 
 ### Audit log (`/admin/audit-log`, Super Admin and Admin)
 
-Key admin mutations are recorded in Postgres (`admin_audit_log`) with who did it (`user_id`) and which client it concerns (`client_id`): document upload/delete/reindex, booking cancel, business-hours update, calendar disconnect, client create/rename/suspend/activate, user create/update/activate/deactivate/password reset, and own password changes.
+Key admin mutations are recorded in Postgres (`admin_audit_log`) with who did it (`user_id`) and which client it concerns (`client_id`): document upload/delete/reindex, booking cancel, business-hours update, calendar connect and disconnect, client create/rename/suspend/activate, user create/update/activate/deactivate/password reset, and own password changes.
 
 Super Admins see every entry and can filter with `?client_id=`. Admins see only their own client's entries. The page shows the latest 50, 100 or 200 entries (the API maximum; there is no paging yet).
 
