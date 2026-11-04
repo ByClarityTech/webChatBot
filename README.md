@@ -105,6 +105,12 @@ Open `http://localhost:3000/?client=<slug>`, or the widget view at `http://local
 | `POST` | `/api/v1/admin/documents/upload` | Upload and index a document, up to 10 MB (409 if the client already has the file) |
 | `DELETE` | `/api/v1/admin/documents/{document_id}` | Remove a document and its chunks |
 | `POST` | `/api/v1/admin/documents/{document_id}/reindex` | Re-index one document from its stored file |
+| `GET` / `POST` | `/api/v1/admin/faqs` | List a client's FAQs, or add one as a draft |
+| `PATCH` / `DELETE` | `/api/v1/admin/faqs/{faq_id}` | Edit, approve (`status: approved`), move back to draft, or delete an FAQ |
+| `POST` | `/api/v1/admin/faqs/approve-all` | Approve every draft FAQ of the client |
+| `POST` | `/api/v1/admin/faqs/generate` | Draft up to 20 FAQs from the client's ready documents with the LLM |
+| `PUT` | `/api/v1/admin/faqs/defaults` | Set the default questions, in order (`faq_ids`, up to 4) |
+| `GET` | `/api/v1/widget/config?client=<slug>` | Public: the client's default questions for the widget (404 if unknown or suspended) |
 | `POST` | `/api/v1/chat` | Chat with RAG + memory for one client (`client` slug required); booking intent returns `action: "open_booking_form"` |
 | `GET` | `/api/v1/admin/google/oauth/start` | Start Google Calendar OAuth (admin) |
 | `GET` | `/api/v1/admin/google/oauth/status` | Google Calendar connection status |
@@ -327,7 +333,7 @@ NEXT_PUBLIC_CHAT_SUBTITLE=                 # empty = no subtitle
 NEXT_PUBLIC_CHAT_GREETING=Hi! How can we help you today?
 ```
 
-Leave `NEXT_PUBLIC_CHAT_TITLE` and `NEXT_PUBLIC_CHAT_SUBTITLE` empty for a clean widget with no product name. The chat UI does not show source filenames to visitors.
+Leave `NEXT_PUBLIC_CHAT_TITLE` and `NEXT_PUBLIC_CHAT_SUBTITLE` empty for a clean widget with no product name. The chat UI does not show source filenames to visitors. The question buttons under the greeting are each client's default questions, set on the **FAQs** page; these environment variables are still the same for every client.
 
 ## Admin dashboard
 
@@ -386,13 +392,14 @@ Set on the **frontend** service:
 1. Sign in at `/admin` with your email and password.
 2. **Home** — summary cards: document count, bookings today, calendar status; prompt deploy note.
 3. **Documents** — upload a PDF, confirm it appears in the list.
-4. **Calendar** — connect Google Calendar (OAuth).
-5. **Settings** — set business hours and timezone.
-6. **Bookings** — view appointments; cancel one if present.
-7. **Clients** (Super Admin) — add a client.
-8. **Users** — add an Admin for that client (Super Admin) or a Support user (Admin); copy the generated password.
-9. Sign in as the new user in a private window: you are asked to choose your own password first.
-10. **Audit log** — see the changes you just made.
+4. **FAQs** — click **Generate FAQs**, check and approve the drafts, and star up to 4 as default questions.
+5. **Calendar** — connect Google Calendar (OAuth).
+6. **Settings** — set business hours and timezone.
+7. **Bookings** — view appointments; cancel one if present.
+8. **Clients** (Super Admin) — add a client.
+9. **Users** — add an Admin for that client (Super Admin) or a Support user (Admin); copy the generated password.
+10. Sign in as the new user in a private window: you are asked to choose your own password first.
+11. **Audit log** — see the changes you just made.
 
 The sidebar shows only the pages your role can open. Click your name at the bottom of the sidebar to open **My account**.
 
@@ -412,6 +419,18 @@ After signing in, open **Documents** in the sidebar to upload PDF, Word, PowerPo
 ```bash
 curl -b cookies.txt http://localhost:8000/api/v1/admin/documents
 ```
+
+### FAQs (`/admin/faqs`)
+
+FAQs are question and answer pairs the chatbot uses before document text. Same roles as Documents (Super Admin, who chooses the client, and Admin).
+
+- **Generate FAQs** sends the client's ready documents to the configured chat model (`LLM_PROVIDER` / `LLM_MODEL`) and saves up to 20 drafts, each linked to its document. Each run reads at most 15,000 characters per document and 60,000 in total; run it again to cover more. Questions the client already has are skipped (same wording, ignoring case); reworded ones can still appear, so check drafts before approving.
+- **Add FAQ** saves your own question and answer as a draft (question up to 200 characters, answer up to 2,000, plain text).
+- Only **approved** FAQs reach the chatbot: approving indexes the FAQ as one chunk for that client, editing an approved FAQ re-indexes it, and **Unapprove** or **Delete** removes it from the chatbot. **Approve all drafts** approves the rest in one go.
+- **Default questions**: star up to 4 approved FAQs and order them with the arrows. They appear as buttons when a visitor opens the chat (from `GET /api/v1/widget/config`). A client with none shows no buttons.
+- When the document an FAQ came from is deleted, the FAQ stays and is marked **Source removed**.
+
+In chat, approved FAQ matches are put first in what the model reads and marked as approved, so the model bases its answer on them.
 
 ### Business hours (`/admin/settings`)
 

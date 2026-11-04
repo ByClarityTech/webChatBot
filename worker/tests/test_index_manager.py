@@ -11,7 +11,7 @@ from app.index_manager import (
     ensure_collection,
     upsert_documents,
 )
-from app.public_pipeline import build_documents
+from app.public_pipeline import build_documents, build_faq_document
 
 CLIENT_A, CLIENT_B = uuid.uuid4(), uuid.uuid4()
 DOC_1, DOC_2 = uuid.uuid4(), uuid.uuid4()
@@ -89,3 +89,20 @@ def test_owner_tags_survive_the_llamaindex_write_path(qdrant, settings, monkeypa
     delete_document_chunks(CLIENT_A, DOC_1, settings)
     assert count_document_chunks(CLIENT_A, DOC_1, settings) == 0
     assert count_document_chunks(CLIENT_B, DOC_2, settings) == len(chunks)
+
+
+def test_indexing_an_faq_again_replaces_its_chunk(qdrant, settings, monkeypatch):
+    for module in (index_manager, public_pipeline):
+        monkeypatch.setattr(module, "_configure_embeddings", lambda _settings: None)
+    monkeypatch.setattr(LlamaSettings, "embed_model", MockEmbedding(embed_dim=1536))
+    faq_id = uuid.uuid4()
+
+    for answer in ("Old answer.", "New answer."):
+        delete_document_chunks(CLIENT_A, faq_id, settings)
+        upsert_documents([build_faq_document("Open?", answer, CLIENT_A, faq_id, settings)], settings)
+
+    assert count_document_chunks(CLIENT_A, faq_id, settings) == 1
+    points, _ = qdrant.scroll(settings.qdrant_collection, with_payload=True, limit=10)
+    (point,) = [p for p in points if p.payload.get("source_id") == str(faq_id)]
+    assert point.payload["doc_type"] == "faq"
+    assert "New answer." in point.payload["_node_content"]

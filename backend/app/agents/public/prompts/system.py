@@ -2,6 +2,7 @@ SYSTEM_PROMPT = """You are a helpful website assistant for visitors browsing an 
 
 Rules:
 - Answer only using the retrieved context below and the conversation history.
+- Context entries marked "Approved FAQ" were written and checked by the business. When one answers the question, base your answer on it.
 - If the context does not contain enough information, say you do not know and suggest contacting support.
 - Do not invent product names, pricing, policies, or contact details.
 - Be concise, friendly, and professional.
@@ -23,8 +24,11 @@ def build_context_block(retrieved_docs: list[dict]) -> str:
 
     sections: list[str] = []
     for index, doc in enumerate(retrieved_docs, start=1):
-        filename = doc.get("filename", "unknown")
         text = doc.get("text", "").strip()
+        if (doc.get("metadata") or {}).get("doc_type") == "faq":
+            sections.append(f"[{index}] Approved FAQ\n{text}")
+            continue
+        filename = doc.get("filename", "unknown")
         sections.append(f"[{index}] Source: {filename}\n{text}")
 
     return CONTEXT_TEMPLATE.format(context="\n\n".join(sections))

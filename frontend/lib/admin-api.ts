@@ -272,6 +272,96 @@ export function reindexDocument(documentId: string, clientId?: string): Promise<
   );
 }
 
+// ---------------------------------------------------------------- FAQs
+// Same client rule as documents. Only approved FAQs reach the chatbot; up to 4 approved
+// ones are the widget's default questions.
+
+export type FaqStatus = "draft" | "approved";
+
+export type Faq = {
+  id: string;
+  client_id: string;
+  question: string;
+  answer: string;
+  status: FaqStatus;
+  is_default: boolean;
+  default_order: number | null;
+  source_id: string | null;
+  source_filename: string | null;
+  /** Generated from a document that has since been deleted. */
+  source_removed: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FaqList = {
+  client_id: string;
+  faqs: Faq[];
+  default_count: number;
+  max_defaults: number;
+};
+
+export type FaqGeneration = {
+  created: Faq[];
+  skipped_existing: number;
+  documents_used: string[];
+  documents_skipped: string[];
+  truncated: boolean;
+};
+
+export type FaqChanges = {
+  question?: string;
+  answer?: string;
+  status?: FaqStatus;
+};
+
+export function listFaqs(clientId?: string): Promise<FaqList> {
+  return adminJson<FaqList>(withClient("/api/v1/admin/faqs", clientId));
+}
+
+export function createFaq(question: string, answer: string, clientId?: string): Promise<Faq> {
+  return adminJson<Faq>(withClient("/api/v1/admin/faqs", clientId), "POST", { question, answer });
+}
+
+export function updateFaq(faqId: string, changes: FaqChanges, clientId?: string): Promise<Faq> {
+  return adminJson<Faq>(
+    withClient(`/api/v1/admin/faqs/${encodeURIComponent(faqId)}`, clientId),
+    "PATCH",
+    changes,
+  );
+}
+
+export async function deleteFaq(faqId: string, clientId?: string): Promise<void> {
+  // 204, no body: not adminJson.
+  const response = await adminFetch(
+    withClient(`/api/v1/admin/faqs/${encodeURIComponent(faqId)}`, clientId),
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+}
+
+export async function approveAllFaqs(clientId?: string): Promise<number> {
+  const result = await adminJson<{ approved: number }>(
+    withClient("/api/v1/admin/faqs/approve-all", clientId),
+    "POST",
+  );
+  return result.approved;
+}
+
+/** Sets the default questions, in this order (up to 4; empty clears them). */
+export function setDefaultFaqs(faqIds: string[], clientId?: string): Promise<Faq[]> {
+  return adminJson<Faq[]>(withClient("/api/v1/admin/faqs/defaults", clientId), "PUT", {
+    faq_ids: faqIds,
+  });
+}
+
+/** Drafts FAQs from the client's ready documents with the LLM; takes several seconds. */
+export function generateFaqs(clientId?: string): Promise<FaqGeneration> {
+  return adminJson<FaqGeneration>(withClient("/api/v1/admin/faqs/generate", clientId), "POST");
+}
+
 // ---------------------------------------------------------------- audit log
 
 export async function listAuditLog(options: { limit?: number; clientId?: string } = {}): Promise<AuditEntry[]> {

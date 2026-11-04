@@ -54,3 +54,23 @@ export async function sendMessage(
 
   return response.json();
 }
+
+export type WidgetConfig = {
+  client: string;
+  /** The client's default questions, in display order (may be empty). */
+  default_questions: string[];
+};
+
+/** The widget's settings for this client; ChatUnavailableError if unknown or suspended. */
+export async function getWidgetConfig(client: string): Promise<WidgetConfig> {
+  const response = await fetch(
+    `${API_URL}/api/v1/widget/config?client=${encodeURIComponent(client)}`,
+  );
+  if (response.status === 404) {
+    throw new ChatUnavailableError();
+  }
+  if (!response.ok) {
+    throw new Error(`Widget config request failed (${response.status})`);
+  }
+  return response.json();
+}

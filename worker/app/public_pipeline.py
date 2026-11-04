@@ -66,3 +66,31 @@ def build_documents(
         )
 
     return documents
+
+
+# Shown as the source name for FAQ chunks (the backend's retrieval reads "filename").
+FAQ_FILENAME = "FAQ"
+FAQ_DOC_TYPE = "faq"
+
+
+def build_faq_document(
+    question: str,
+    answer: str,
+    client_id: UUID,
+    faq_id: UUID,
+    settings: WorkerSettings,
+) -> Document:
+    """An approved FAQ as one chunk: never split, so question and answer stay together."""
+    _configure_embeddings(settings)
+    return Document(
+        text=f"Question: {question.strip()}\nAnswer: {answer.strip()}",
+        metadata={
+            "filename": FAQ_FILENAME,
+            "doc_type": FAQ_DOC_TYPE,
+            "indexed_at": datetime.now(UTC).isoformat(),
+            CLIENT_ID_KEY: str(client_id),
+            SOURCE_ID_KEY: str(faq_id),
+        },
+        excluded_embed_metadata_keys=_HIDDEN_METADATA_KEYS,
+        excluded_llm_metadata_keys=_HIDDEN_METADATA_KEYS,
+    )

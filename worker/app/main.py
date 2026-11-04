@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from app.config import WorkerSettings, get_settings
 from app.docling_converter import convert_to_markdown
 from app.index_manager import delete_document_chunks, ensure_collection, upsert_documents
-from app.public_pipeline import build_documents
+from app.public_pipeline import build_documents, build_faq_document
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,13 @@ ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".html", ".htm", ".md", ".txt"}
 class ReindexRequest(BaseModel):
     client_id: UUID
     filename: str = Field(..., min_length=1, max_length=255)
+
+
+class FaqIndexRequest(BaseModel):
+    # Same limits as the faqs table (backend migration 0006).
+    client_id: UUID
+    question: str = Field(..., min_length=1, max_length=200)
+    answer: str = Field(..., min_length=1, max_length=2000)
 
 
 # Files live under <dir>/<client_id>/<document_id>.<ext>; the IDs are UUIDs, so they are
@@ -157,3 +164,57 @@ async def reindex_document(document_id: UUID, body: ReindexRequest) -> dict[str,
         "chunks_indexed": chunks_indexed,
         "document_id": str(document_id),
     }
+
+
+@app.get("/documents/{document_id}/text")
+async def document_text(document_id: UUID, client_id: UUID = Query(...)) -> dict[str, str]:
+    """The document's Markdown (from the Docling cache, else converted again), for FAQ
+    generation. 404 when this client has no such document."""
+    settings = get_settings()
+    cache_file = _cache_path(settings, client_id, document_id)
+    if cache_file.exists():
+        return {"document_id": str(document_id), "text": cache_file.read_text(encoding="utf-8")}
+
+    stored_files = _stored_uploads(settings, client_id, document_id)
+    if not stored_files:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Stored upload not found for this document; upload the file again",
+        )
+    try:
+        markdown = convert_to_markdown(stored_files[0], cache_file)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not read document: {exc}",
+        ) from exc
+    return {"document_id": str(document_id), "text": markdown}
+
+
+# ---------------------------------------------------------------- FAQs
+# An approved FAQ is one chunk whose source_id is the FAQ's id. Indexing again replaces it.
+
+
+@app.put("/faqs/{faq_id}")
+async def index_faq(faq_id: UUID, body: FaqIndexRequest) -> dict[str, int | str]:
+    settings = get_settings()
+    document = build_faq_document(body.question, body.answer, body.client_id, faq_id, settings)
+    try:
+        ensure_collection(settings)
+        delete_document_chunks(body.client_id, faq_id, settings)
+        chunks_indexed = upsert_documents([document], settings)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"FAQ indexing failed: {exc}",
+        ) from exc
+    return {"status": "indexed", "chunks_indexed": chunks_indexed, "faq_id": str(faq_id)}
+
+
+@app.delete("/faqs/{faq_id}")
+async def delete_faq(faq_id: UUID, client_id: UUID = Query(...)) -> dict[str, str]:
+    settings = get_settings()
+    delete_document_chunks(client_id, faq_id, settings)
+    return {"status": "deleted", "faq_id": str(faq_id)}

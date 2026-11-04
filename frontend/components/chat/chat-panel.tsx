@@ -2,7 +2,12 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 
-import { ChatUnavailableError, clientSlugFromUrl, sendMessage } from "@/lib/api";
+import {
+  ChatUnavailableError,
+  clientSlugFromUrl,
+  getWidgetConfig,
+  sendMessage,
+} from "@/lib/api";
 import { chatConfig } from "@/lib/chat-config";
 
 import { BookingForm } from "./booking-form";
@@ -64,6 +69,8 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
   // The client whose assistant this is, from the page URL (?client=...).
   const [clientSlug, setClientSlug] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
+  // The client's default questions (its starred FAQs), from the widget config.
+  const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([]);
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const prevMessageCountRef = useRef(0);
@@ -79,6 +86,15 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
         setThreadId(storedThread);
       }
       setMessages(loadStoredMessages(slug));
+      // Checks the client before the visitor types, and loads its default questions.
+      getWidgetConfig(slug)
+        .then((config) => setSuggestedQuestions(config.default_questions))
+        .catch((configError) => {
+          if (configError instanceof ChatUnavailableError) {
+            setUnavailable(true);
+          }
+          // Any other failure: chat still works, just without default questions.
+        });
     }
     setHydrated(true);
   }, []);
@@ -282,9 +298,9 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
                 {chatConfig.greeting}
               </p>
             )}
-            {chatConfig.suggestedQuestions.length > 0 && (
+            {suggestedQuestions.length > 0 && (
               <div className="flex w-full flex-col gap-2">
-                {chatConfig.suggestedQuestions.map((question) => (
+                {suggestedQuestions.map((question) => (
                   <button
                     key={question}
                     type="button"

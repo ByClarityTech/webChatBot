@@ -124,3 +124,71 @@ def test_old_unscoped_endpoints_are_gone(worker):
     assert worker.get("/documents").status_code in (404, 405)
     assert worker.delete("/documents", params={"all": "true"}).status_code in (404, 405)
     assert worker.delete(f"/documents/source/{'a' * 64}").status_code in (404, 405, 422)
+
+
+# ---------------------------------------------------------------- document text
+
+
+def test_document_text_comes_from_the_cache_of_that_client(worker):
+    ingest(worker, CLIENT_A)
+
+    own = worker.get(f"/documents/{DOC_1}/text", params={"client_id": str(CLIENT_A)})
+    other = worker.get(f"/documents/{DOC_1}/text", params={"client_id": str(CLIENT_B)})
+
+    assert own.status_code == 200
+    assert own.json()["text"].startswith("# Hours")
+    assert other.status_code == 404
+
+
+def test_document_text_converts_again_when_the_cache_is_gone(worker, settings):
+    ingest(worker, CLIENT_A)
+    (Path(settings.docling_cache_dir) / str(CLIENT_A) / f"{DOC_1}.md").unlink()
+    converted_before = len(worker.calls["converted"])
+
+    response = worker.get(f"/documents/{DOC_1}/text", params={"client_id": str(CLIENT_A)})
+
+    assert response.status_code == 200
+    assert len(worker.calls["converted"]) == converted_before + 1
+
+
+def test_document_text_requires_a_client(worker):
+    assert worker.get(f"/documents/{DOC_1}/text").status_code == 422
+
+
+# ---------------------------------------------------------------- FAQs
+
+FAQ_1 = uuid.uuid4()
+
+
+def test_an_faq_is_indexed_as_one_tagged_chunk(worker):
+    response = worker.put(
+        f"/faqs/{FAQ_1}",
+        json={"client_id": str(CLIENT_A), "question": " Are you open? ", "answer": "Yes, 9-5."},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "indexed", "chunks_indexed": 1, "faq_id": str(FAQ_1)}
+    (chunk,) = worker.calls["upserted"][-1]
+    assert chunk.text == "Question: Are you open?\nAnswer: Yes, 9-5."
+    assert chunk.metadata["doc_type"] == "faq"
+    assert chunk.metadata["client_id"] == str(CLIENT_A)
+    assert chunk.metadata["source_id"] == str(FAQ_1)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"question": "Q?", "answer": "A"},  # no client
+        {"client_id": str(CLIENT_A), "question": "", "answer": "A"},
+        {"client_id": str(CLIENT_A), "question": "Q" * 201, "answer": "A"},
+        {"client_id": str(CLIENT_A), "question": "Q?", "answer": "A" * 2001},
+    ],
+)
+def test_faq_index_rejects_missing_client_and_bad_lengths(worker, body):
+    assert worker.put(f"/faqs/{FAQ_1}", json=body).status_code == 422
+    assert worker.calls["upserted"] == []
+
+
+def test_faq_delete_requires_a_client(worker):
+    assert worker.delete(f"/faqs/{FAQ_1}").status_code == 422
+    assert worker.delete(f"/faqs/{FAQ_1}", params={"client_id": str(CLIENT_A)}).status_code == 200

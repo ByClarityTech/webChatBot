@@ -37,3 +37,27 @@ def test_the_retrieve_node_passes_the_states_client(monkeypatch):
         {"messages": [HumanMessage(content="Opening hours?")], "client_id": "client-9"}
     )
     assert seen == {"query": "Opening hours?", "client_id": "client-9"}
+
+
+def test_approved_faqs_come_first_and_are_labelled(monkeypatch):
+    from app.agents.public.prompts.system import build_context_block
+
+    chunk = vector_retriever.RetrievedChunk
+    site = {"doc_type": "public_site"}
+
+    def fake_retrieve(query, client_id):
+        return [
+            chunk("Doc text A", "hours.md", 0.9, site),
+            chunk("Question: Open?\nAnswer: 9-5", "FAQ", 0.8, {"doc_type": "faq"}),
+            chunk("Doc text B", "prices.md", 0.7, site),
+        ]
+
+    monkeypatch.setattr(retrieve_node_module, "retrieve_chunks", fake_retrieve)
+    docs = retrieve_node_module.retrieve_node(
+        {"messages": [HumanMessage(content="Open?")], "client_id": "c"}
+    )["retrieved_docs"]
+
+    assert [d["filename"] for d in docs] == ["FAQ", "hours.md", "prices.md"]
+    context = build_context_block(docs)
+    assert "[1] Approved FAQ\nQuestion: Open?" in context
+    assert "[2] Source: hours.md" in context

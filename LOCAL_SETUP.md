@@ -185,7 +185,7 @@ npm run dev
 ```
 
 The Next.js application will be available at:
-- Chat for one client: `http://localhost:3000/?client=<slug>` (widget view: `http://localhost:3000/embed?client=<slug>`). Without `?client=` the page shows "This assistant is not available".
+- Chat for one client: `http://localhost:3000/?client=<slug>` (widget view: `http://localhost:3000/embed?client=<slug>`). Without `?client=` the page shows "This assistant is not available". The question buttons are the client's default questions from the admin **FAQs** page.
 - Admin Dashboard: [http://localhost:3000/admin](http://localhost:3000/admin)
 
 ---

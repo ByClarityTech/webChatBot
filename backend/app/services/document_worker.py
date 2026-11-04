@@ -64,7 +64,7 @@ def _worker_detail(response: httpx.Response, fallback: str) -> str:
     return str(detail) if detail else (response.text or fallback)
 
 
-def _raise_worker_error(response: httpx.Response, fallback: str) -> None:
+def raise_worker_error(response: httpx.Response, fallback: str) -> None:
     """Bad files (400) and missing stored files (404) keep their status; the rest is a 502."""
     if response.status_code < 400:
         return
@@ -153,7 +153,7 @@ async def upload_document(
             files={"file": (filename, content, file.content_type or "application/octet-stream")},
             data={"client_id": str(client.id), "document_id": str(source.id)},
         )
-        _raise_worker_error(response, "Ingestion worker failed")
+        raise_worker_error(response, "Ingestion worker failed")
     except HTTPException as exc:
         await update_knowledge_source_status(source.id, status=STATUS_FAILED, error=str(exc.detail))
         raise
@@ -187,7 +187,7 @@ async def reindex_document(client: ClientRecord, document_id: UUID) -> AdminDocu
             f"/documents/{source.id}/reindex",
             json={"client_id": str(client.id), "filename": source.filename},
         )
-        _raise_worker_error(response, "Failed to reindex document")
+        raise_worker_error(response, "Failed to reindex document")
     except HTTPException as exc:
         # The worker drops old chunks before writing new ones, so treat it as not indexed.
         await update_knowledge_source_status(
@@ -204,7 +204,7 @@ async def _remove_from_worker(client: ClientRecord, source: KnowledgeSourceRecor
     response = await worker_request(
         "DELETE", f"/documents/{source.id}", params={"client_id": str(client.id)}
     )
-    _raise_worker_error(response, "Failed to delete document")
+    raise_worker_error(response, "Failed to delete document")
 
 
 async def _read_and_validate_upload(file: UploadFile) -> tuple[str, str, bytes]:

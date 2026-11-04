@@ -68,6 +68,8 @@ export function canManageUser(actor: UserRef, target: UserRef): boolean {
 export const ADMIN_PAGES: readonly { href: string; label: string; area: AdminArea }[] = [
   { href: "/admin", label: "Home", area: "dashboard" },
   { href: "/admin/documents", label: "Documents", area: "documents" },
+  // FAQs are part of the knowledge base: same roles as Documents.
+  { href: "/admin/faqs", label: "FAQs", area: "documents" },
   { href: "/admin/calendar", label: "Calendar", area: "calendar" },
   { href: "/admin/settings", label: "Settings", area: "business_hours" },
   { href: "/admin/bookings", label: "Bookings", area: "bookings" },

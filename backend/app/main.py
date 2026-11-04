@@ -7,13 +7,14 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.agents.public.graph import build_public_assistant_graph
 from app.api.routes import auth as user_auth
-from app.api.routes import booking, chat, health
+from app.api.routes import booking, chat, health, widget
 from app.api.routes.admin import (
     audit_log,
     bookings as admin_bookings,
     clients as admin_clients,
     dashboard as admin_dashboard,
     documents as admin_documents,
+    faqs as admin_faqs,
     google_oauth,
     settings as admin_settings,
     users as admin_users,
@@ -68,10 +69,12 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(chat.router, prefix="/api/v1")
+    app.include_router(widget.router, prefix="/api/v1")
     app.include_router(user_auth.router, prefix="/api/v1")
     app.include_router(admin_clients.router, prefix="/api/v1")
     app.include_router(admin_users.router, prefix="/api/v1")
     app.include_router(admin_documents.router, prefix="/api/v1")
+    app.include_router(admin_faqs.router, prefix="/api/v1")
     app.include_router(google_oauth.router, prefix="/api/v1")
     app.include_router(admin_settings.router, prefix="/api/v1")
     app.include_router(admin_bookings.router, prefix="/api/v1")
