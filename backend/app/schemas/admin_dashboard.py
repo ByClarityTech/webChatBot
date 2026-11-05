@@ -8,6 +8,8 @@ class AdminDashboardSummaryResponse(BaseModel):
     document_count: int
     bookings_today: int
     calendar_connected: bool
+    # google, built_in or none for one client; None for the Super Admin's all-clients view.
+    calendar_mode: str | None = None
 
 
 class AdminAuditLogEntry(BaseModel):

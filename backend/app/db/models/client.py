@@ -14,11 +14,13 @@ class ClientRecord:
     created_at: datetime
     updated_at: datetime
     user_count: int = 0
+    # google, built_in or none (migration 0009): where open booking slots come from.
+    calendar_mode: str = "none"
 
 
 _CLIENT_COLUMNS = """
     c.id, c.name, c.slug, c.status, c.created_at, c.updated_at,
-    (SELECT COUNT(*) FROM users u WHERE u.client_id = c.id)
+    (SELECT COUNT(*) FROM users u WHERE u.client_id = c.id), c.calendar_mode
 """
 
 
@@ -31,6 +33,7 @@ def _row_to_record(row: tuple) -> ClientRecord:
         created_at=row[4],
         updated_at=row[5],
         user_count=int(row[6]),
+        calendar_mode=row[7],
     )
 
 
@@ -98,6 +101,20 @@ async def update_client(
                 WHERE id = %s
                 """,
                 (name, status, client_id),
+            )
+        await conn.commit()
+    return await get_client(client_id)
+
+
+CALENDAR_MODES = ("none", "google", "built_in")
+
+
+async def set_client_calendar_mode(client_id: UUID, mode: str) -> ClientRecord | None:
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE clients SET calendar_mode = %s, updated_at = NOW() WHERE id = %s",
+                (mode, client_id),
             )
         await conn.commit()
     return await get_client(client_id)

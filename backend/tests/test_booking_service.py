@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import psycopg
 import pytest
+from auth_helpers import make_client_record
 
 from app.booking import service
 from app.booking.config import BusinessHoursConfig
@@ -33,6 +34,16 @@ class Fakes:
         self.calls: list[str] = []
         self.google_fails = False
         self.confirm_returns_none = False
+        self.mode = "google"
+        self.google_connected = True
+
+    async def get_client(self, client_id):
+        record = make_client_record(client_id=client_id)
+        record.calendar_mode = self.mode
+        return record
+
+    async def is_google_calendar_connected(self, client_id):
+        return self.google_connected
 
     async def validate_bookable_slot(self, client_id, slot_start):
         self.calls.append("validate")
@@ -44,7 +55,8 @@ class Fakes:
             r.client_id == client_id and r.slot_start == slot_start and r.status != "cancelled"
             for r in self.rows.values()
         ):
-            raise psycopg.errors.UniqueViolation("slot taken")
+            # What the overlap rule (exclusion constraint) raises.
+            raise psycopg.errors.ExclusionViolation("slot taken")
         record = BookingRecord(
             id=uuid4(),
             name=fields["name"],
@@ -95,6 +107,8 @@ class Fakes:
 def fakes(monkeypatch):
     fake = Fakes()
     for name in (
+        "get_client",
+        "is_google_calendar_connected",
         "validate_bookable_slot",
         "claim_booking_slot",
         "create_calendar_event",
@@ -155,10 +169,35 @@ async def test_cancel_is_scoped_to_the_client_and_removes_the_event(fakes):
     with pytest.raises(BookingNotFoundError):
         await service.cancel_booking(uuid4(), record.id)
 
-    cancelled = await service.cancel_booking(CLIENT, record.id)
-    assert cancelled.status == "cancelled"
+    result = await service.cancel_booking(CLIENT, record.id)
+    assert (result.booking.status, result.calendar_warning) == ("cancelled", None)
     assert "google:delete:evt_1" in fakes.calls
     # Cancelling twice does nothing more.
     fakes.calls.clear()
-    assert (await service.cancel_booking(CLIENT, record.id)).status == "cancelled"
+    assert (await service.cancel_booking(CLIENT, record.id)).booking.status == "cancelled"
     assert fakes.calls == []
+
+
+# ---------------------------------------------------------------- built-in calendar
+
+
+async def test_built_in_bookings_are_confirmed_without_google(fakes):
+    fakes.mode = "built_in"
+    record = await book()
+    assert (record.status, record.google_event_id) == ("confirmed", None)
+    assert fakes.calls == ["validate", "claim", "confirm"]
+
+    with pytest.raises(BookingConflictError):
+        await book(email="second@example.com")
+
+
+async def test_a_google_booking_is_cancelled_even_if_google_is_gone(fakes):
+    record = await book()  # made while on Google: it has an event
+    fakes.mode, fakes.google_connected = "built_in", False
+    fakes.calls.clear()
+
+    result = await service.cancel_booking(CLIENT, record.id)
+
+    assert result.booking.status == "cancelled"
+    assert "remove it there yourself" in result.calendar_warning.lower()
+    assert not any(call.startswith("google:") for call in fakes.calls)

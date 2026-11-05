@@ -14,7 +14,9 @@ from app.db.models.booking import (
     claim_booking_slot,
     confirm_booking,
     get_client_booking,
+    list_blocking_bookings,
 )
+from app.db.models.client import get_client, set_client_calendar_mode
 from app.db.models.google_token import (
     STATUS_NEEDS_RECONNECT,
     STATUS_OK,
@@ -56,14 +58,14 @@ async def test_a_claim_holds_the_slot_as_pending_until_confirmed(db):
     held = await claim(client_a)
     assert (held.status, held.client_id, held.google_event_id) == (STATUS_PENDING, client_a, None)
 
-    with pytest.raises(psycopg.errors.UniqueViolation):
+    with pytest.raises(psycopg.errors.ExclusionViolation):
         await claim(client_a, email="second@example.com")
 
     confirmed = await confirm_booking(held.id, "google-event-1")
     assert (confirmed.status, confirmed.google_event_id) == (STATUS_CONFIRMED, "google-event-1")
     # Only a pending booking can be confirmed.
     assert await confirm_booking(held.id, "again") is None
-    with pytest.raises(psycopg.errors.UniqueViolation):
+    with pytest.raises(psycopg.errors.ExclusionViolation):
         await claim(client_a)
 
 
@@ -88,7 +90,7 @@ async def test_a_recent_pending_hold_still_blocks(db):
         "UPDATE bookings SET created_at = NOW() - make_interval(mins => %s) WHERE id = %s",
         (PENDING_HOLD_MINUTES - 1, held.id),
     )
-    with pytest.raises(psycopg.errors.UniqueViolation):
+    with pytest.raises(psycopg.errors.ExclusionViolation):
         await claim(client_a, email="next@example.com")
 
 
@@ -157,6 +159,7 @@ async def test_business_hours_are_per_client(db):
         end_time="12:00",
         slot_duration_minutes=20,
         slot_buffer_minutes=5,
+        min_notice_minutes=30,
     )
     await save_client_business_hours(client_a, timezone="Asia/Kolkata", **hours)
     await save_client_business_hours(client_b, timezone="Europe/London", **hours)
@@ -164,7 +167,11 @@ async def test_business_hours_are_per_client(db):
         client_a, timezone="Asia/Kolkata", **{**hours, "end_time": "13:00"}
     )
 
-    assert (updated.end_time, updated.timezone) == ("13:00", "Asia/Kolkata")
+    assert (updated.end_time, updated.timezone, updated.min_notice_minutes) == (
+        "13:00",
+        "Asia/Kolkata",
+        30,
+    )
     assert (await get_client_business_hours(client_b)).timezone == "Europe/London"
     assert db.execute("SELECT COUNT(*) FROM business_hours_settings").fetchone()[0] == 2
 
@@ -222,3 +229,58 @@ async def test_rows_must_have_a_client(db):
     with pytest.raises(psycopg.errors.NotNullViolation), db.transaction():
         db.execute("INSERT INTO oauth_pending_states (state, code_verifier, expires_at)"
                    " VALUES ('s', 'v', NOW())")
+
+
+# ---------------------------------------------------------------- migration 0009
+
+
+async def test_overlapping_bookings_are_refused_even_with_another_start(db):
+    client_a = add_client(db, "a")
+    await claim(client_a)  # 09:00-09:30
+    with pytest.raises(psycopg.errors.ExclusionViolation):
+        await claim_booking_slot(
+            client_id=client_a,
+            name="V",
+            phone="1",
+            email="v2@example.com",
+            slot_start=SLOT + timedelta(minutes=20),
+            slot_end=SLOT + timedelta(minutes=40),
+            thread_id=None,
+        )
+    # Back to back is fine.
+    await claim_booking_slot(
+        client_id=client_a,
+        name="V",
+        phone="1",
+        email="v3@example.com",
+        slot_start=SLOT + timedelta(minutes=30),
+        slot_end=SLOT + timedelta(minutes=60),
+        thread_id=None,
+    )
+
+
+async def test_blocking_bookings_skip_stale_holds_and_follow_the_mode(db):
+    client_a = add_client(db, "a")
+    fresh = await claim(client_a)
+    stale = await claim(client_a, slot=SLOT + timedelta(hours=1), email="stale@example.com")
+    db.execute(
+        "UPDATE bookings SET created_at = NOW() - make_interval(mins => %s) WHERE id = %s",
+        (PENDING_HOLD_MINUTES + 1, stale.id),
+    )
+    done = await claim(client_a, slot=SLOT + timedelta(hours=2), email="done@example.com")
+    await confirm_booking(done.id, None)
+    window = dict(window_start=SLOT - timedelta(hours=1), window_end=SLOT + timedelta(hours=4))
+
+    built_in = await list_blocking_bookings(client_a, include_confirmed=True, **window)
+    google = await list_blocking_bookings(client_a, include_confirmed=False, **window)
+
+    assert [start for start, _ in built_in] == [fresh.slot_start, done.slot_start]
+    assert [start for start, _ in google] == [fresh.slot_start]  # Google shows confirmed ones
+
+
+async def test_calendar_mode_is_stored_and_checked(db):
+    client_a = add_client(db, "a")
+    assert (await get_client(client_a)).calendar_mode == "none"
+    assert (await set_client_calendar_mode(client_a, "built_in")).calendar_mode == "built_in"
+    with pytest.raises(psycopg.errors.CheckViolation), db.transaction():
+        db.execute("UPDATE clients SET calendar_mode = 'outlook' WHERE id = %s", (client_a,))

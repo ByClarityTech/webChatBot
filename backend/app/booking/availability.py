@@ -3,7 +3,10 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from app.booking.config import BusinessHoursConfig, get_business_hours_config
+from app.booking.mode import MODE_BUILT_IN, MODE_GOOGLE
 from app.booking.schemas import AvailabilityResponse, Slot
+from app.db.models.booking import list_blocking_bookings
+from app.db.models.client import get_client
 from app.integrations.google.calendar_client import query_freebusy
 from app.integrations.google.oauth import is_google_calendar_connected
 from app.integrations.google.schemas import BusyPeriod
@@ -19,6 +22,10 @@ class SlotNotAvailableError(Exception):
 
 class SlotInPastError(Exception):
     pass
+
+
+class SlotTooSoonError(SlotInPastError):
+    """Starts within the client's minimum notice."""
 
 
 def _parse_time(hhmm: str) -> time:
@@ -60,8 +67,22 @@ def generate_candidate_slots(
 
 
 async def get_availability_for_date(client_id: UUID, target_date: date) -> AvailabilityResponse:
-    """Open slots of one client: its business hours (in its timezone) minus busy times in its
-    own Google Calendar."""
+    """Open slots of one client on one day, generated from its business hours (in its
+    timezone), minus busy times, minus anything within its minimum notice.
+
+    Busy times depend on the calendar mode: with Google, the client's Google Calendar (where
+    confirmed bookings are events) plus fresh pending holds; with the built-in calendar, the
+    client's own confirmed bookings and fresh pending holds."""
+    client = await get_client(client_id)
+    mode = client.calendar_mode if client is not None else None
+    if mode == MODE_GOOGLE:
+        if not await is_google_calendar_connected(client_id):
+            raise CalendarNotConnectedError(
+                "Google Calendar is not connected (or needs to be connected again)"
+            )
+    elif mode != MODE_BUILT_IN:
+        raise CalendarNotConnectedError("Online booking is off for this client")
+
     config = await get_business_hours_config(client_id)
     tz = ZoneInfo(config.booking_timezone)
 
@@ -72,30 +93,38 @@ async def get_availability_for_date(client_id: UUID, target_date: date) -> Avail
             slots=[],
         )
 
-    if not await is_google_calendar_connected(client_id):
-        raise CalendarNotConnectedError(
-            "Google Calendar is not connected (or needs to be connected again) for this client."
-        )
-
     business_start = _parse_time(config.business_hours_start)
     business_end = _parse_time(config.business_hours_end)
     day_start = datetime.combine(target_date, business_start, tzinfo=tz)
     day_end = datetime.combine(target_date, business_end, tzinfo=tz)
-
-    freebusy = await query_freebusy(
-        client_id=client_id,
-        time_min=day_start,
-        time_max=day_end,
-        timezone=config.booking_timezone,
-    )
-
     buffer = timedelta(minutes=config.booking_slot_buffer_minutes)
-    blocked = [_expand_busy_with_buffer(period, buffer) for period in freebusy.busy]
 
-    now = datetime.now(tz)
+    busy: list[tuple[datetime, datetime]] = []
+    if mode == MODE_GOOGLE:
+        freebusy = await query_freebusy(
+            client_id=client_id,
+            time_min=day_start,
+            time_max=day_end,
+            timezone=config.booking_timezone,
+        )
+        busy.extend((period.start, period.end) for period in freebusy.busy)
+    # Widened by the buffer, so a booking just outside the day still pushes slots away.
+    busy.extend(
+        await list_blocking_bookings(
+            client_id,
+            window_start=day_start - buffer,
+            window_end=day_end + buffer,
+            include_confirmed=mode == MODE_BUILT_IN,
+        )
+    )
+    blocked = [
+        _expand_busy_with_buffer(BusyPeriod(start=start, end=end), buffer) for start, end in busy
+    ]
+
+    earliest = datetime.now(tz) + timedelta(minutes=config.booking_min_notice_minutes)
     available_slots: list[Slot] = []
     for slot_start, slot_end in generate_candidate_slots(target_date, tz, config):
-        if slot_start < now:
+        if slot_start < earliest:
             continue
         if any(
             _slots_overlap(slot_start, slot_end, busy_start, busy_end)
@@ -130,6 +159,11 @@ async def validate_bookable_slot(
     now = datetime.now(tz)
     if normalized_start < now:
         raise SlotInPastError("Cannot book a slot in the past")
+    if normalized_start < now + timedelta(minutes=config.booking_min_notice_minutes):
+        raise SlotTooSoonError(
+            f"This time is too soon to book. Please choose a time at least "
+            f"{config.booking_min_notice_minutes} minutes from now."
+        )
 
     target_date = normalized_start.date()
     availability = await get_availability_for_date(client_id, target_date)

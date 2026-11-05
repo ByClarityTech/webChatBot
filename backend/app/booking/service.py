@@ -1,11 +1,14 @@
 """Bookings of one client.
 
-A booking first holds its slot in the database (pending), then creates the Google event,
-then becomes confirmed. Two visitors racing for the same slot are separated by the database
-before anything reaches Google: the second gets BookingConflictError (409) and no invite.
+A booking first holds its slot in the database (pending), then, with the Google calendar
+mode, creates the Google event, then becomes confirmed. The database refuses overlapping
+active bookings of a client (an exclusion constraint), so two visitors racing for the same
+time are separated before anything reaches Google: the second gets BookingConflictError
+(409) and no invite. With the built-in calendar there is no Google event.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
@@ -17,6 +20,7 @@ from app.booking.availability import (
     SlotNotAvailableError,
     validate_bookable_slot,
 )
+from app.booking.mode import MODE_GOOGLE
 from app.core.tracing import tag_langsmith_run
 from app.db.models.booking import (
     BookingRecord,
@@ -28,17 +32,20 @@ from app.db.models.booking import (
     update_booking_status,
 )
 from app.db.models.booking import list_bookings as list_bookings_db
+from app.db.models.client import get_client
 from app.integrations.google.calendar_client import (
     GoogleCalendarError,
     create_calendar_event,
     delete_calendar_event,
 )
+from app.integrations.google.oauth import is_google_calendar_connected
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "BookingConflictError",
     "BookingNotFoundError",
+    "CancelResult",
     "CalendarNotConnectedError",
     "SlotInPastError",
     "SlotNotAvailableError",
@@ -49,6 +56,10 @@ __all__ = [
 ]
 
 SLOT_TAKEN = "This time slot was just booked by someone else"
+EVENT_LEFT_IN_GOOGLE = (
+    "The booking is cancelled, but its event could not be removed from Google Calendar. "
+    "Remove it there yourself."
+)
 
 
 class BookingConflictError(Exception):
@@ -57,6 +68,14 @@ class BookingConflictError(Exception):
 
 class BookingNotFoundError(Exception):
     pass
+
+
+@dataclass
+class CancelResult:
+    booking: BookingRecord
+    # Set when the booking had a Google event that could not be removed; the admin removes
+    # it in Google Calendar by hand.
+    calendar_warning: str | None = None
 
 
 async def create_booking(
@@ -70,6 +89,9 @@ async def create_booking(
 ) -> BookingRecord:
     normalized_start, slot_end, config = await validate_bookable_slot(client_id, slot_start)
 
+    client = await get_client(client_id)
+    uses_google = client is not None and client.calendar_mode == MODE_GOOGLE
+
     # 1. Hold the slot. A second request for it stops here, before Google sends any invite.
     try:
         held = await claim_booking_slot(
@@ -81,8 +103,16 @@ async def create_booking(
             slot_end=slot_end,
             thread_id=thread_id,
         )
-    except psycopg.errors.UniqueViolation as exc:
+    except (psycopg.errors.ExclusionViolation, psycopg.errors.UniqueViolation) as exc:
         raise BookingConflictError(SLOT_TAKEN) from exc
+
+    if not uses_google:
+        # Built-in calendar: the database booking is the whole booking.
+        record = await confirm_booking(held.id, None)
+        if record is None:
+            raise BookingConflictError(SLOT_TAKEN)
+        tag_langsmith_run(agent="public", intent="booking", booking_id=str(record.id))
+        return record
 
     # 2. The event in the client's calendar (this emails the visitor an invite).
     try:
@@ -139,15 +169,26 @@ async def list_bookings(
     return records, total
 
 
-async def cancel_booking(client_id: UUID, booking_id: UUID) -> BookingRecord:
+async def cancel_booking(client_id: UUID, booking_id: UUID) -> CancelResult:
+    """Cancels the booking and frees its slot. Its Google event is removed when the client
+    still has a healthy Google connection; otherwise the booking is cancelled anyway and the
+    result says the event is left in Google."""
     record = await fetch_booking(client_id, booking_id)
     if record.status == "cancelled":
-        return record
+        return CancelResult(record)
 
+    warning = None
     if record.google_event_id:
-        await delete_calendar_event(client_id=client_id, event_id=record.google_event_id)
+        if await is_google_calendar_connected(client_id):
+            try:
+                await delete_calendar_event(client_id=client_id, event_id=record.google_event_id)
+            except GoogleCalendarError:
+                logger.exception("Could not remove Google event of booking %s", booking_id)
+                warning = EVENT_LEFT_IN_GOOGLE
+        else:
+            warning = EVENT_LEFT_IN_GOOGLE
 
     updated = await update_booking_status(booking_id, "cancelled")
     if updated is None:
         raise BookingNotFoundError("Booking not found")
-    return updated
+    return CancelResult(updated, warning)

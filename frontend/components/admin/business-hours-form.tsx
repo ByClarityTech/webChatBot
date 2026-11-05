@@ -11,6 +11,7 @@ export type BusinessHoursSettings = {
   end_time: string;
   slot_duration_minutes: number;
   slot_buffer_minutes: number;
+  min_notice_minutes: number;
   timezone: string;
   source: string;
   updated_at: string | null;
@@ -67,6 +68,7 @@ function emptyForm(): Omit<BusinessHoursSettings, "source" | "updated_at"> {
     end_time: "17:00",
     slot_duration_minutes: 30,
     slot_buffer_minutes: 15,
+    min_notice_minutes: 60,
     timezone: "Asia/Kolkata",
   };
 }
@@ -95,6 +97,7 @@ export function BusinessHoursForm() {
       end_time: data.end_time,
       slot_duration_minutes: data.slot_duration_minutes,
       slot_buffer_minutes: data.slot_buffer_minutes,
+      min_notice_minutes: data.min_notice_minutes,
       timezone: data.timezone,
     });
     setSource(data.source);
@@ -292,6 +295,27 @@ export function BusinessHoursForm() {
           />
         </label>
       </div>
+
+      <label className="block text-sm">
+        <span className="font-medium text-slate-700">Minimum notice (minutes)</span>
+        <input
+          type="number"
+          required
+          min={0}
+          max={10080}
+          value={form.min_notice_minutes}
+          onChange={(e) =>
+            setForm((prev) => ({
+              ...prev,
+              min_notice_minutes: Number(e.target.value),
+            }))
+          }
+          className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900"
+        />
+        <span className="mt-1 block text-xs text-slate-500">
+          Visitors can&apos;t book a time sooner than this from now. 60 is one hour, 1440 one day.
+        </span>
+      </label>
 
       <label className="block text-sm">
         <span className="font-medium text-slate-700">Timezone</span>

@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     booking_slot_duration_minutes: int = 30
     booking_slot_buffer_minutes: int = 15
     booking_timezone: str = "Asia/Kolkata"
+    # Default minimum notice before a slot can be booked (a client can save its own).
+    booking_min_notice_minutes: int = 60
     business_hours_start: str = "09:00"
     business_hours_end: str = "17:00"
     business_days: str = "1,2,3,4,5"

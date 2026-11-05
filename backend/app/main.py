@@ -11,6 +11,7 @@ from app.api.routes import booking, chat, health, widget
 from app.api.routes.admin import (
     audit_log,
     bookings as admin_bookings,
+    calendar as admin_calendar,
     clients as admin_clients,
     dashboard as admin_dashboard,
     documents as admin_documents,
@@ -76,6 +77,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_documents.router, prefix="/api/v1")
     app.include_router(admin_faqs.router, prefix="/api/v1")
     app.include_router(google_oauth.router, prefix="/api/v1")
+    app.include_router(admin_calendar.router, prefix="/api/v1")
     app.include_router(admin_settings.router, prefix="/api/v1")
     app.include_router(admin_bookings.router, prefix="/api/v1")
     app.include_router(admin_dashboard.router, prefix="/api/v1")

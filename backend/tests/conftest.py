@@ -15,7 +15,8 @@ import sys
 UNREACHABLE = "127.0.0.1:1"
 TEST_ENV = {
     "APP_ENV": "development",
-    "DATABASE_URL": f"postgresql://test:test@{UNREACHABLE}/test",
+    # connect_timeout: a test that forgets to fake the database fails in seconds, not minutes.
+    "DATABASE_URL": f"postgresql://test:test@{UNREACHABLE}/test?connect_timeout=2",
     "QDRANT_URL": f"http://{UNREACHABLE}",
     "WORKER_URL": f"http://{UNREACHABLE}",
     "OPENAI_API_KEY": "",

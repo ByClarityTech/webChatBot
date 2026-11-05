@@ -1,6 +1,7 @@
 """Public widget config: a client's default questions, or "not available"."""
 
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -35,12 +36,12 @@ def app(monkeypatch):
 
     monkeypatch.setattr("app.services.public_client.get_client_by_slug", get_client_by_slug)
     monkeypatch.setattr(widget, "list_default_questions", list_default_questions)
-    connected = {clients["clinic"].id}
+    bookable = {clients["clinic"].id}
 
-    async def is_google_calendar_connected(client_id):
-        return client_id in connected
+    async def booking_available(client):
+        return client.id in bookable
 
-    monkeypatch.setattr(widget, "is_google_calendar_connected", is_google_calendar_connected)
+    monkeypatch.setattr(widget, "booking_available", booking_available)
     test_app = FastAPI()
     test_app.include_router(widget.router, prefix="/api/v1")
     return test_app
@@ -62,12 +63,22 @@ async def test_returns_the_clients_default_questions_in_order(app):
     }
 
 
-async def test_booking_also_needs_online_booking_switched_on(app, monkeypatch):
-    monkeypatch.setattr(widget, "get_settings", lambda: type("S", (), {"booking_enabled": True})())
-    clinic = (await get_config(app, client="clinic")).json()
-    assert clinic["booking_available"] is True
-    monkeypatch.setattr(widget, "get_settings", lambda: type("S", (), {"booking_enabled": False})())
-    assert (await get_config(app, client="clinic")).json()["booking_available"] is False
+async def test_booking_available_follows_the_clients_calendar_mode(app, monkeypatch):
+    from app.booking import mode
+
+    record = make_client("plain")
+    for calendar_mode, connected, enabled, expected in (
+        ("built_in", False, True, True),
+        ("google", True, True, True),
+        ("google", False, True, False),  # needs reconnecting
+        ("none", True, True, False),
+        ("built_in", False, False, False),  # online booking switched off on the server
+    ):
+        record.calendar_mode = calendar_mode
+        monkeypatch.setattr(mode, "is_google_calendar_connected", AsyncMock(return_value=connected))
+        settings = type("S", (), {"booking_enabled": enabled})()
+        monkeypatch.setattr(mode, "get_settings", lambda s=settings: s)
+        assert await mode.booking_available(record) is expected, (calendar_mode, connected, enabled)
 
 
 @pytest.mark.parametrize("slug", ["unknown", "paused"])

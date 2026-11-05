@@ -27,6 +27,7 @@ def _to_response(config, *, updated_at=None) -> BusinessHoursResponse:
         slot_duration_minutes=config.booking_slot_duration_minutes,
         slot_buffer_minutes=config.booking_slot_buffer_minutes,
         timezone=config.booking_timezone,
+        min_notice_minutes=config.booking_min_notice_minutes,
         source=config.source,
         updated_at=updated_at,
     )
@@ -57,6 +58,7 @@ async def update_business_hours_settings(
         slot_duration_minutes=body.slot_duration_minutes,
         slot_buffer_minutes=body.slot_buffer_minutes,
         timezone=body.timezone,
+        min_notice_minutes=body.min_notice_minutes,
     )
     config = await get_business_hours_config(client.id)
     await log_admin_action(

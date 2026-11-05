@@ -2,9 +2,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from app.core.config import get_settings
+from app.booking.mode import booking_available
 from app.db.models.faq import list_default_questions
-from app.integrations.google.oauth import is_google_calendar_connected
 from app.schemas.users import SLUG_PATTERN
 from app.schemas.widget import WidgetConfigResponse
 from app.services.public_client import get_active_client
@@ -23,7 +22,6 @@ async def widget_config(
         client=record.slug,
         name=record.name,
         default_questions=await list_default_questions(record.id),
-        # Online booking needs booking switched on and a healthy calendar for this client.
-        booking_available=get_settings().booking_enabled
-        and await is_google_calendar_connected(record.id),
+        # Booking switched on, and the built-in calendar or a healthy Google connection.
+        booking_available=await booking_available(record),
     )

@@ -14,6 +14,8 @@ class BusinessHoursConfig:
     booking_slot_buffer_minutes: int
     booking_timezone: str
     source: str
+    # A slot must start at least this many minutes from now.
+    booking_min_notice_minutes: int = 60
 
 
 def default_business_hours() -> BusinessHoursConfig:
@@ -27,6 +29,7 @@ def default_business_hours() -> BusinessHoursConfig:
         booking_slot_buffer_minutes=settings.booking_slot_buffer_minutes,
         booking_timezone=settings.booking_timezone,
         source="env",
+        booking_min_notice_minutes=settings.booking_min_notice_minutes,
     )
 
 
@@ -39,6 +42,7 @@ def _from_record(record: BusinessHoursRecord) -> BusinessHoursConfig:
         booking_slot_buffer_minutes=record.slot_buffer_minutes,
         booking_timezone=record.timezone,
         source="database",
+        booking_min_notice_minutes=record.min_notice_minutes,
     )
 
 

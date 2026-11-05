@@ -102,3 +102,5 @@ class AdminBookingCancelResponse(BaseModel):
     id: UUID
     status: str
     message: str = Field(default="Booking cancelled successfully")
+    # Set when its Google event could not be removed (remove it in Google Calendar by hand).
+    warning: str | None = None

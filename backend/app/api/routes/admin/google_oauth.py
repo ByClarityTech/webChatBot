@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 
 from app.api.deps.auth import require_access
+from app.booking.mode import MODE_GOOGLE, MODE_NONE
 from app.booking.schemas import (
     OAuthDisconnectResponse,
     OAuthStartResponse,
@@ -15,6 +16,7 @@ from app.core.config import get_settings
 from app.core.permissions import Area, can_access
 from app.core.roles import UserType
 from app.core.security import TokenConfigError
+from app.db.models.client import get_client, set_client_calendar_mode
 from app.db.models.google_token import (
     STATUS_OK,
     delete_client_google_token,
@@ -130,6 +132,8 @@ async def oauth_callback(
     except GoogleOAuthError as exc:
         return _redirect(client_id=target, error=str(exc))
 
+    # Connecting Google means using it for this client's bookings.
+    await set_client_calendar_mode(flow.client_id, MODE_GOOGLE)
     request.state.current_user = user  # for the audit row
     await log_admin_action(
         "calendar.connect",
@@ -177,6 +181,10 @@ async def oauth_status(actor: CalendarActor, client_id: ClientIdQuery = None):
 async def oauth_disconnect(request: Request, actor: CalendarActor, client_id: ClientIdQuery = None):
     client = await resolve_client_scope(actor, client_id)
     await delete_client_google_token(client.id)
+    # Without a connection the Google mode cannot book: turn online booking off.
+    current = await get_client(client.id)
+    if current is not None and current.calendar_mode == MODE_GOOGLE:
+        await set_client_calendar_mode(client.id, MODE_NONE)
     await log_admin_action(
         "calendar.disconnect",
         resource_type="calendar",

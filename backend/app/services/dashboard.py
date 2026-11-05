@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 from app.booking.config import default_business_hours, get_business_hours_config
 from app.db.models.booking import count_bookings
+from app.db.models.client import get_client
 from app.db.models.google_token import count_healthy_google_connections
 from app.integrations.google.oauth import is_google_calendar_connected
 from app.schemas.admin_dashboard import AdminDashboardSummaryResponse
@@ -27,8 +28,11 @@ async def get_dashboard_summary(client_id: UUID | None = None) -> AdminDashboard
     bookings_today = await count_bookings(
         client_id=client_id, slot_from=start_of_day, slot_to=end_of_day, status="confirmed"
     )
+    calendar_mode = None
     if client_id is not None:
         calendar_connected = await is_google_calendar_connected(client_id)
+        client = await get_client(client_id)
+        calendar_mode = client.calendar_mode if client is not None else None
     else:
         calendar_connected = await count_healthy_google_connections() > 0
 
@@ -36,4 +40,5 @@ async def get_dashboard_summary(client_id: UUID | None = None) -> AdminDashboard
         document_count=documents,
         bookings_today=bookings_today,
         calendar_connected=calendar_connected,
+        calendar_mode=calendar_mode,
     )

@@ -108,7 +108,7 @@ async def cancel_booking_admin(
 ) -> AdminBookingCancelResponse:
     client = await resolve_client_scope(actor, client_id)
     try:
-        record = await cancel_booking(client.id, booking_id)
+        result = await cancel_booking(client.id, booking_id)
     except BookingNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -127,4 +127,6 @@ async def cancel_booking_admin(
         request=request,
         client_id=client.id,
     )
-    return AdminBookingCancelResponse(id=record.id, status=record.status)
+    return AdminBookingCancelResponse(
+        id=result.booking.id, status=result.booking.status, warning=result.calendar_warning
+    )

@@ -13,6 +13,7 @@ class BusinessHoursResponse(BaseModel):
     slot_duration_minutes: int = Field(..., ge=5, le=480)
     slot_buffer_minutes: int = Field(..., ge=0, le=120)
     timezone: str = Field(..., min_length=1, max_length=100)
+    min_notice_minutes: int = Field(..., ge=0, le=10080)
     source: str = Field(..., description="database or env")
     updated_at: datetime | None = None
 
@@ -24,6 +25,8 @@ class BusinessHoursUpdateRequest(BaseModel):
     slot_duration_minutes: int = Field(..., ge=5, le=480)
     slot_buffer_minutes: int = Field(..., ge=0, le=120)
     timezone: str = Field(..., min_length=1, max_length=100)
+    # How soon a slot may start, from now (0 to 7 days).
+    min_notice_minutes: int = Field(default=60, ge=0, le=10080)
 
     @field_validator("business_days")
     @classmethod

@@ -1,6 +1,7 @@
 from datetime import date
 from typing import Annotated
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
@@ -10,6 +11,7 @@ from app.booking.availability import (
     SlotNotAvailableError,
     get_availability_for_date,
 )
+from app.booking.config import get_business_hours_config
 from app.booking.schemas import (
     AvailabilityResponse,
     BookingCreateRequest,
@@ -115,12 +117,21 @@ async def book_appointment(
     except (CalendarNotConnectedError, GoogleCalendarError) as exc:
         raise _unavailable(exc) from exc
 
-    return BookingResponse(
+    response = BookingResponse(
         id=record.id,
         status=record.status,
         slot_start=record.slot_start,
         slot_end=record.slot_end,
     )
+    if record.google_event_id is None:
+        # Built-in calendar: no Google invite is sent, so say when instead.
+        timezone = (await get_business_hours_config(client.id)).booking_timezone
+        when = record.slot_start.astimezone(ZoneInfo(timezone))
+        response.message = (
+            f"Booking confirmed for {when:%a %d %b}, {when:%I:%M %p}".replace(" 0", " ")
+            + f" ({timezone})."
+        )
+    return response
 
 
 @router.get("/{booking_id}", response_model=BookingDetailResponse)

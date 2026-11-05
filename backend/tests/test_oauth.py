@@ -126,11 +126,24 @@ def test_ensure_scope_in_auth_url_adds_missing_scope():
 
 
 @pytest.fixture
-def app(monkeypatch):
+def modes():
+    """Calendar mode per client id, as the routes change it."""
+    return {}
+
+
+@pytest.fixture
+def app(monkeypatch, modes):
     async def get_client(client_id):
-        return make_client_record(client_id=client_id)
+        record = make_client_record(client_id=client_id)
+        record.calendar_mode = modes.get(client_id, "none")
+        return record
+
+    async def set_client_calendar_mode(client_id, mode):
+        modes[client_id] = mode
 
     monkeypatch.setattr("app.services.client_scope.get_client", get_client)
+    monkeypatch.setattr(google_oauth, "get_client", get_client)
+    monkeypatch.setattr(google_oauth, "set_client_calendar_mode", set_client_calendar_mode)
     settings = MagicMock(admin_frontend_url="http://localhost:3000")
     monkeypatch.setattr(google_oauth, "get_settings", lambda: settings)
     test_app = FastAPI()
@@ -202,7 +215,7 @@ async def callback(app, *, user, flow, exchange=None):
     return response, exchange
 
 
-async def test_the_user_who_started_can_finish_and_it_is_audited(app, audit_rows):
+async def test_the_user_who_started_can_finish_and_it_is_audited(app, audit_rows, modes):
     admin = make_user(UserType.admin)
     flow = OAuthPendingFlow(code_verifier="v", client_id=admin.client_id, user_id=admin.id)
 
@@ -210,6 +223,8 @@ async def test_the_user_who_started_can_finish_and_it_is_audited(app, audit_rows
 
     assert redirect_params(response) == {"connected": "1"}
     exchange.assert_awaited_once_with("abc", flow)
+    # Connecting Google switches the client to the Google calendar mode.
+    assert modes[admin.client_id] == "google"
     assert (audit_rows[0]["action"], audit_rows[0]["client_id"], audit_rows[0]["user_id"]) == (
         "calendar.connect",
         admin.client_id,
@@ -227,7 +242,7 @@ async def test_a_super_admin_returns_to_the_clients_page(app):
 @pytest.mark.parametrize(
     "case", ["signed_out", "other_user", "other_client", "must_change_password"]
 )
-async def test_nobody_else_can_finish_a_flow(app, case, audit_rows):
+async def test_nobody_else_can_finish_a_flow(app, case, audit_rows, modes):
     admin = make_user(UserType.admin)
     flow = OAuthPendingFlow(code_verifier="v", client_id=admin.client_id, user_id=admin.id)
     user = {
@@ -246,7 +261,7 @@ async def test_nobody_else_can_finish_a_flow(app, case, audit_rows):
 
     assert "error" in redirect_params(response)
     exchange.assert_not_awaited()
-    assert audit_rows == []
+    assert audit_rows == [] and modes == {}
 
 
 async def test_an_unknown_or_used_state_is_refused(app):
@@ -270,16 +285,30 @@ async def test_callback_without_code_redirects_with_an_error(app):
     assert redirect_params(response)["error"] == "Missing authorization code or state"
 
 
-async def test_disconnect_removes_only_this_clients_connection(app, audit_rows):
+async def test_disconnect_removes_only_this_clients_connection(app, audit_rows, modes):
     delete = AsyncMock(return_value=True)
     with (
         signed_in(app, UserType.admin) as admin,
         patch.object(google_oauth, "delete_client_google_token", delete),
     ):
+        modes[admin.client_id] = "google"
         async with http(app) as client:
             response = await client.delete("/api/v1/admin/google/oauth/disconnect")
     assert response.status_code == 200
     delete.assert_awaited_once_with(admin.client_id)
+    # Without a connection the Google mode cannot book: online booking is turned off.
+    assert modes[admin.client_id] == "none"
+
+
+async def test_disconnect_keeps_the_built_in_calendar(app, modes, audit_rows):
+    with (
+        signed_in(app, UserType.admin) as admin,
+        patch.object(google_oauth, "delete_client_google_token", AsyncMock(return_value=True)),
+    ):
+        modes[admin.client_id] = "built_in"
+        async with http(app) as client:
+            await client.delete("/api/v1/admin/google/oauth/disconnect")
+    assert modes[admin.client_id] == "built_in"
     assert (audit_rows[0]["action"], audit_rows[0]["client_id"]) == (
         "calendar.disconnect",
         admin.client_id,

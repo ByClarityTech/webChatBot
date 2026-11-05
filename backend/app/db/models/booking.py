@@ -230,3 +230,35 @@ async def get_client_booking(booking_id: UUID, *, client_id: UUID) -> BookingRec
     if row is None:
         return None
     return _row_to_record(row)
+
+
+async def list_blocking_bookings(
+    client_id: UUID,
+    *,
+    window_start: datetime,
+    window_end: datetime,
+    include_confirmed: bool,
+) -> list[tuple[datetime, datetime]]:
+    """(start, end) of this client's bookings that block slots in the window.
+
+    A pending hold only counts while fresh (PENDING_HOLD_MINUTES): an abandoned one stops
+    hiding its slot. Confirmed bookings count only when the database is the source of busy
+    times (built-in calendar); with Google, their events already block the time."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT slot_start, slot_end FROM bookings
+                WHERE client_id = %s
+                  AND slot_start < %s AND slot_end > %s
+                  AND (
+                    (status = 'confirmed' AND %s)
+                    OR (status = 'pending'
+                        AND created_at > NOW() - make_interval(mins => %s))
+                  )
+                ORDER BY slot_start
+                """,
+                (client_id, window_end, window_start, include_confirmed, PENDING_HOLD_MINUTES),
+            )
+            rows = await cur.fetchall()
+    return [(row[0], row[1]) for row in rows]

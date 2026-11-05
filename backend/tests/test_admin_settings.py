@@ -16,6 +16,22 @@ from app.db.models.admin_settings import BusinessHoursRecord
 
 
 @pytest.fixture(autouse=True)
+def google_mode_client(monkeypatch):
+    """The client uses its Google Calendar and has no bookings of its own blocking slots."""
+
+    async def get_client(client_id):
+        record = make_client_record(client_id=client_id)
+        record.calendar_mode = "google"
+        return record
+
+    async def list_blocking_bookings(client_id, **_):
+        return []
+
+    monkeypatch.setattr("app.booking.availability.get_client", get_client)
+    monkeypatch.setattr("app.booking.availability.list_blocking_bookings", list_blocking_bookings)
+
+
+@pytest.fixture(autouse=True)
 def known_clients(monkeypatch):
     """Every client id exists (the routes look the actor's client up)."""
 

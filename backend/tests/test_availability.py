@@ -22,6 +22,22 @@ from app.core.roles import UserType
 from app.integrations.google.schemas import BusyPeriod, FreeBusyResult
 
 
+@pytest.fixture(autouse=True)
+def google_mode_client(monkeypatch):
+    """The client uses its Google Calendar and has no bookings of its own blocking slots."""
+
+    async def get_client(client_id):
+        record = make_client_record(client_id=client_id)
+        record.calendar_mode = "google"
+        return record
+
+    async def list_blocking_bookings(client_id, **_):
+        return []
+
+    monkeypatch.setattr("app.booking.availability.get_client", get_client)
+    monkeypatch.setattr("app.booking.availability.list_blocking_bookings", list_blocking_bookings)
+
+
 @pytest.fixture
 def oauth_app():
     test_app = FastAPI()

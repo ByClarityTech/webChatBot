@@ -11,7 +11,38 @@ type DashboardSummary = {
   document_count: number;
   bookings_today: number;
   calendar_connected: boolean;
+  calendar_mode: "google" | "built_in" | "none" | null;
 };
+
+const CALENDAR_MODE_LABELS = {
+  google: "Google Calendar",
+  built_in: "Built-in calendar",
+  none: "No online booking",
+} as const;
+
+function calendarCard(summary: DashboardSummary): { value: string; hint: string } {
+  // Super Admin sees every client, so there is no single mode.
+  if (summary.calendar_mode === null) {
+    return {
+      value: summary.calendar_connected ? "Connected" : "Not connected",
+      hint: summary.calendar_connected
+        ? "At least one client has a connected Google Calendar"
+        : "No client has a connected Google Calendar",
+    };
+  }
+  if (summary.calendar_mode === "google") {
+    return {
+      value: summary.calendar_connected ? "Google Calendar" : "Google (reconnect)",
+      hint: summary.calendar_connected
+        ? "Availability and invites come from Google"
+        : "Reconnect Google Calendar to take bookings again",
+    };
+  }
+  if (summary.calendar_mode === "built_in") {
+    return { value: "Built-in calendar", hint: "Business hours minus bookings made here" };
+  }
+  return { value: CALENDAR_MODE_LABELS.none, hint: "Choose a calendar to take bookings" };
+}
 
 async function parseError(response: Response): Promise<string> {
   const text = await response.text();
@@ -135,18 +166,10 @@ export default function AdminDashboardPage() {
             }
           />
           <SummaryCard
-            title="Google Calendar"
-            value={summary.calendar_connected ? "Connected" : "Not connected"}
+            title="Calendar"
+            value={calendarCard(summary).value}
             href="/admin/calendar"
-            hint={
-              isSuperAdmin
-                ? summary.calendar_connected
-                  ? "At least one client has a connected calendar"
-                  : "No client has a connected calendar"
-                : summary.calendar_connected
-                  ? "Calendar linked for availability and bookings"
-                  : "Connect calendar to enable booking"
-            }
+            hint={calendarCard(summary).hint}
           />
         </div>
       ) : null}

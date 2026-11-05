@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
+from auth_helpers import make_client_record
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessage, HumanMessage
@@ -45,13 +46,18 @@ async def test_booking_intent_node_when_disabled_returns_no_action(mock_get_sett
 
 @pytest.mark.asyncio
 @patch(
-    "app.agents.public.nodes.booking_intent.is_google_calendar_connected",
+    "app.agents.public.nodes.booking_intent.booking_available",
     new_callable=AsyncMock,
     return_value=True,
 )
+@patch(
+    "app.agents.public.nodes.booking_intent.get_client",
+    new_callable=AsyncMock,
+    side_effect=lambda client_id: make_client_record(client_id=client_id),
+)
 @patch("app.agents.public.nodes.booking_intent.get_settings")
 async def test_booking_intent_node_when_enabled_returns_open_form_action(
-    mock_get_settings, mock_connected
+    mock_get_settings, mock_get_client, mock_available
 ):
     mock_get_settings.return_value = MagicMock(booking_enabled=True, langsmith_enabled=False)
     state = _base_state()
@@ -60,18 +66,24 @@ async def test_booking_intent_node_when_enabled_returns_open_form_action(
 
     assert result["booking_action"] == OPEN_BOOKING_FORM_ACTION
     assert "booking form" in result["messages"][0].content.lower()
-    mock_connected.assert_awaited_once_with(UUID(state["client_id"]))
+    mock_get_client.assert_awaited_once_with(UUID(state["client_id"]))
+    mock_available.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 @patch(
-    "app.agents.public.nodes.booking_intent.is_google_calendar_connected",
+    "app.agents.public.nodes.booking_intent.booking_available",
     new_callable=AsyncMock,
     return_value=False,
 )
+@patch(
+    "app.agents.public.nodes.booking_intent.get_client",
+    new_callable=AsyncMock,
+    side_effect=lambda client_id: make_client_record(client_id=client_id),
+)
 @patch("app.agents.public.nodes.booking_intent.get_settings")
-async def test_no_booking_form_when_the_clients_calendar_is_not_connected(
-    mock_get_settings, _mock_connected
+async def test_no_booking_form_when_the_client_has_no_online_booking(
+    mock_get_settings, _mock_get_client, _mock_available
 ):
     mock_get_settings.return_value = MagicMock(booking_enabled=True, langsmith_enabled=False)
 

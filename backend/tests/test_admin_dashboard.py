@@ -67,6 +67,7 @@ async def test_dashboard_summary_returns_counts_for_the_admins_client(dashboard_
         "document_count": 3,
         "bookings_today": 2,
         "calendar_connected": True,
+        "calendar_mode": None,
     }
     summary.assert_awaited_once_with(admin.client_id)
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { ClientPicker, useClientScope } from "@/components/admin/client-picker";
@@ -17,6 +18,33 @@ type OAuthStatus = {
   connected_email: string | null;
   refresh_error: string | null;
 };
+
+type CalendarMode = "google" | "built_in" | "none";
+
+type CalendarSettings = {
+  calendar_mode: CalendarMode;
+  google_connected: boolean;
+  google_needs_reconnect: boolean;
+  booking_available: boolean;
+};
+
+const MODE_OPTIONS: { value: CalendarMode; label: string; description: string }[] = [
+  {
+    value: "google",
+    label: "Google Calendar",
+    description: "Open times come from your Google Calendar; visitors get a Google invite.",
+  },
+  {
+    value: "built_in",
+    label: "Built-in calendar",
+    description: "Open times are your business hours minus bookings made here. No Google account.",
+  },
+  {
+    value: "none",
+    label: "No online booking",
+    description: "Visitors are not offered booking in the chat.",
+  },
+];
 
 async function parseError(response: Response): Promise<string> {
   const text = await response.text();
@@ -61,6 +89,22 @@ export default function AdminCalendarPage() {
   const [disconnecting, setDisconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  // The saved mode, and the option shown (Google can be shown before it is connected).
+  const [settings, setSettings] = useState<CalendarSettings | null>(null);
+  const [chosen, setChosen] = useState<CalendarMode>("none");
+  const [savingMode, setSavingMode] = useState(false);
+
+  const loadSettings = useCallback(async () => {
+    const response = await adminFetch(withClient("/api/v1/admin/calendar"));
+    if (!response.ok) {
+      throw new Error(await parseError(response));
+    }
+    const data = (await response.json()) as CalendarSettings;
+    setSettings(data);
+    setChosen(data.calendar_mode);
+    return data;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- withClient changes with scope
+  }, [clientScope.scope]);
 
   const loadStatus = useCallback(async () => {
     setError(null);
@@ -83,7 +127,7 @@ export default function AdminCalendarPage() {
       }
       setLoading(true);
       try {
-        const data = await loadStatus();
+        const [data] = await Promise.all([loadStatus(), loadSettings()]);
         if (!cancelled) {
           setStatus(data);
           if (data.refresh_error) {
@@ -105,7 +149,7 @@ export default function AdminCalendarPage() {
     return () => {
       cancelled = true;
     };
-  }, [loadStatus, needsClient]);
+  }, [loadStatus, loadSettings, needsClient]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -183,11 +227,49 @@ export default function AdminCalendarPage() {
         connected_email: null,
         refresh_error: null,
       });
-      setSuccess("Google Calendar disconnected.");
+      const after = await loadSettings();
+      setSuccess(
+        after.calendar_mode === "none"
+          ? "Google Calendar disconnected. Online booking is off until you choose a calendar."
+          : "Google Calendar disconnected.",
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to disconnect calendar.");
     } finally {
       setDisconnecting(false);
+    }
+  }
+
+  async function handleChooseMode(mode: CalendarMode) {
+    setError(null);
+    setSuccess(null);
+    // Google is saved when the connection exists; otherwise show the Connect button first.
+    if (mode === "google" && !settings?.google_connected) {
+      setChosen("google");
+      return;
+    }
+    setSavingMode(true);
+    try {
+      const response = await adminFetch(withClient("/api/v1/admin/calendar/mode"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      if (!response.ok) {
+        throw new Error(await parseError(response));
+      }
+      const data = (await response.json()) as CalendarSettings;
+      setSettings(data);
+      setChosen(data.calendar_mode);
+      setSuccess(
+        mode === "none"
+          ? "Online booking is off for this client."
+          : `Saved. Visitors book from the ${mode === "google" ? "Google" : "built-in"} calendar.`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change the calendar.");
+    } finally {
+      setSavingMode(false);
     }
   }
 
@@ -196,10 +278,10 @@ export default function AdminCalendarPage() {
 
   return (
     <div className="px-8 py-10">
-      <h1 className="text-2xl font-semibold text-slate-900">Google Calendar</h1>
+      <h1 className="text-2xl font-semibold text-slate-900">Calendar</h1>
       <p className="mt-2 max-w-2xl text-sm text-slate-600">
-        Connect your company calendar so visitors can see real availability and receive invites.
-        Each client connects its own calendar.
+        Choose where visitors&apos; open booking times come from. Each client has its own
+        calendar.
       </p>
 
       <div className="mt-6">
@@ -217,7 +299,66 @@ export default function AdminCalendarPage() {
         </div>
       ) : null}
 
-      <div className="mt-8 max-w-xl rounded-xl border border-slate-200 bg-white p-6">
+      {!needsClient && !loading && settings ? (
+        <fieldset className="mt-8 max-w-xl space-y-2" disabled={savingMode}>
+          <legend className="mb-2 text-sm font-medium text-slate-900">Booking calendar</legend>
+          {MODE_OPTIONS.map((option) => (
+            <label
+              key={option.value}
+              className={`flex cursor-pointer gap-3 rounded-xl border p-4 text-sm ${
+                chosen === option.value ? "border-slate-900 bg-slate-50" : "border-slate-200 bg-white"
+              }`}
+            >
+              <input
+                type="radio"
+                name="calendar-mode"
+                value={option.value}
+                checked={chosen === option.value}
+                onChange={() => void handleChooseMode(option.value)}
+                className="mt-1"
+              />
+              <span>
+                <span className="block font-medium text-slate-900">
+                  {option.label}
+                  {settings.calendar_mode === option.value ? (
+                    <span className="ml-2 text-xs font-normal text-slate-500">(in use)</span>
+                  ) : null}
+                </span>
+                <span className="block text-slate-600">{option.description}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+      ) : null}
+
+      {!needsClient && !loading && chosen === "built_in" ? (
+        <div className="mt-6 max-w-xl space-y-2 rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-600">
+          <p>
+            Open times are this client&apos;s business hours, minus bookings already made here,
+            with the buffer and minimum notice from{" "}
+            <Link href="/admin/settings" className="font-medium text-slate-900 underline">
+              Settings
+            </Link>
+            .
+          </p>
+          <p>
+            Other meetings in a Google Calendar do not block times here, and visitors get no
+            calendar invite: they see the booked time in the chat.
+          </p>
+        </div>
+      ) : null}
+
+      {!needsClient && !loading && chosen === "none" ? (
+        <div className="mt-6 max-w-xl rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-600">
+          Online booking is off. The assistant answers questions but does not offer to book.
+        </div>
+      ) : null}
+
+      <div
+        className={`mt-6 max-w-xl rounded-xl border border-slate-200 bg-white p-6 ${
+          !needsClient && !loading && chosen !== "google" ? "hidden" : ""
+        }`}
+      >
         {needsClient ? (
           <p className="text-sm text-slate-500">Choose a client to see and connect its calendar.</p>
         ) : loading ? (

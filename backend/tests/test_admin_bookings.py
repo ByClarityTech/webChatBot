@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api.routes.admin import bookings as admin_bookings
 from app.core.roles import UserType
+from app.booking.service import CancelResult
 from app.db.models.booking import BookingRecord
 
 
@@ -155,7 +156,7 @@ async def test_get_booking_detail_not_found(admin_bookings_app):
 @pytest.mark.asyncio
 async def test_cancel_booking(admin_bookings_app):
     record = _sample_booking(status="cancelled")
-    mock_cancel = AsyncMock(return_value=record)
+    mock_cancel = AsyncMock(return_value=CancelResult(record))
 
     with (
         signed_in(admin_bookings_app, UserType.admin),

@@ -70,6 +70,7 @@ export function BookingsTable() {
   const [actionId, setActionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
@@ -146,6 +147,7 @@ export function BookingsTable() {
     setActionId(booking.id);
     setError(null);
     setSuccess(null);
+    setWarning(null);
 
     try {
       const response = await adminFetch(withClient(`/api/v1/admin/bookings/${booking.id}`), {
@@ -154,7 +156,10 @@ export function BookingsTable() {
       if (!response.ok) {
         throw new Error(await parseError(response));
       }
+      const result = (await response.json()) as { warning?: string | null };
       setSuccess(`Cancelled booking for ${booking.name}.`);
+      // The booking is cancelled even when its Google event could not be removed.
+      setWarning(result.warning ?? null);
       await loadBookings();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Cancel failed.");
@@ -220,6 +225,7 @@ export function BookingsTable() {
 
       {error && <p className="text-sm text-red-600">{error}</p>}
       {success && <p className="text-sm text-green-700">{success}</p>}
+      {warning && <p className="text-sm text-amber-700">{warning}</p>}
 
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
         <table className="min-w-full divide-y divide-slate-200 text-sm">
