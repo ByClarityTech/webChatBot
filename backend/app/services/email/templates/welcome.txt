@@ -1,0 +1,11 @@
+Your account is ready
+
+Hello $full_name,
+
+An administrator at $practice_name created an account for you in the $from_name admin app.
+
+Sign in with the password your administrator gave you. You will be asked to choose a new password the first time.
+
+$login_url
+
+If you were not expecting this email, tell your administrator.

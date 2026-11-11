@@ -27,3 +27,19 @@ class CurrentUserResponse(BaseModel):
 
 class LogoutResponse(BaseModel):
     ok: bool = True
+
+
+class MessageResponse(BaseModel):
+    detail: str
+
+
+class SetPasswordRequest(BaseModel):
+    """Body for the emailed setup and reset links. The token travels in the body, not the URL."""
+
+    token: str = Field(..., min_length=1, max_length=256)
+    new_password: str = Field(..., min_length=1, max_length=1024)
+
+
+class ForgotPasswordRequest(BaseModel):
+    # Plain string, like LoginRequest: any input gets the same answer, so none is rejected here.
+    email: str = Field(..., min_length=3, max_length=255)

@@ -1,10 +1,11 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 
 from app.api.deps.auth import require_access
 from app.core.permissions import Area
+from app.db.models.invite_token import INVITE
 from app.db.models.user import UserRecord
 from app.schemas.users import (
     UserCreateRequest,
@@ -12,8 +13,10 @@ from app.schemas.users import (
     UserResponse,
     UserUpdateRequest,
 )
-from app.services import user_management
+from app.services import invites, user_management
 from app.services.admin_audit import log_admin_action
+from app.services.email import deliver
+from app.services.email.messages import invite_message, welcome_message
 from app.services.user_management import (
     ConflictError,
     ForbiddenError,
@@ -66,7 +69,12 @@ async def get_users(
 
 
 @router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def create_user(body: UserCreateRequest, request: Request, actor: UsersActor) -> UserResponse:
+async def create_user(
+    body: UserCreateRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    actor: UsersActor,
+) -> UserResponse:
     try:
         user = await user_management.create_user(
             actor,
@@ -76,8 +84,16 @@ async def create_user(body: UserCreateRequest, request: Request, actor: UsersAct
             user_type=body.user_type,
             client_id=body.client_id,
         )
+        token = await invites.issue(user.id, INVITE) if body.password is None else None
     except UserManagementError as exc:
         raise to_http_error(exc) from exc
+
+    # The email goes out after the response, so SES latency never holds up this request.
+    if token is None:
+        background_tasks.add_task(deliver, welcome_message(user))
+    else:
+        background_tasks.add_task(deliver, invite_message(user, token))
+
     await log_admin_action(
         "user.create",
         request=request,
@@ -94,6 +110,29 @@ async def get_user(user_id: UUID, actor: UsersActor) -> UserResponse:
         user = await user_management.get_visible_user(actor, user_id)
     except UserManagementError as exc:
         raise to_http_error(exc) from exc
+    return to_user_response(user)
+
+
+@router.post("/{user_id}/resend-invite", response_model=UserResponse)
+async def resend_invite(
+    user_id: UUID,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    actor: UsersActor,
+) -> UserResponse:
+    """New setup link by email. Any link sent before this one stops working."""
+    try:
+        user, token = await invites.resend_invite(actor, user_id)
+    except UserManagementError as exc:
+        raise to_http_error(exc) from exc
+    background_tasks.add_task(deliver, invite_message(user, token))
+    await log_admin_action(
+        "user.invite_resent",
+        request=request,
+        resource_type="user",
+        resource_id=str(user_id),
+        client_id=user.client_id,
+    )
     return to_user_response(user)
 
 

@@ -7,6 +7,7 @@
 - Super Admins are never created or edited through the API (scripts/create_super_admin.py).
 """
 
+import secrets
 from uuid import UUID
 
 import psycopg
@@ -136,10 +137,13 @@ async def create_user(
     *,
     email: str,
     full_name: str,
-    password: str,
+    password: str | None,
     user_type: str,
     client_id: UUID | None,
 ) -> UserRecord:
+    """password=None: the account gets no usable password. The caller sends an invite, and the
+    user sets their own password from it. With a password, the admin's choice must be changed
+    at first sign-in (the legacy path)."""
     if user_type not in (ADMIN, SUPPORT):
         raise ForbiddenError("Super Admins can only be created with scripts/create_super_admin.py")
 
@@ -164,16 +168,23 @@ async def create_user(
     full_name = full_name.strip()
     if not full_name:
         raise InvalidInputError("Full name is required")
-    _check_password(password, email=email)
+    if password is None:
+        # Random and never shown: no one knows it, and it fails every verify_password check.
+        password_hash = hash_password(secrets.token_urlsafe(32))
+        must_change = False
+    else:
+        _check_password(password, email=email)
+        password_hash = hash_password(password)
+        # The admin chose this password; the user replaces it at first sign-in.
+        must_change = True
 
     try:
         return await insert_user(
             client_id=client_id,
             user_type_id=USER_TYPE_IDS[UserType(user_type)],
             email=email,
-            password_hash=hash_password(password),
-            # The admin chose this password; the user replaces it at first sign-in.
-            must_change_password=True,
+            password_hash=password_hash,
+            must_change_password=must_change,
             full_name=full_name,
         )
     except psycopg.errors.UniqueViolation as exc:

@@ -35,7 +35,9 @@ class ClientListResponse(BaseModel):
 class UserCreateRequest(BaseModel):
     email: EmailStr
     full_name: str = Field(..., min_length=1, max_length=255)
-    password: str = Field(..., min_length=1, max_length=1024)
+    # Omit to send an invite email instead: the user sets their own password from the link.
+    # With a password, the legacy path runs: the user must change it at first sign-in.
+    password: str | None = Field(default=None, min_length=1, max_length=1024)
     # Super Admins are created only with scripts/create_super_admin.py.
     user_type: Literal["admin", "support"]
     # Required for Super Admins; Admins always create users in their own client.

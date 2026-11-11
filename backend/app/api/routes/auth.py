@@ -1,21 +1,35 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 
 from app.api.deps.auth import get_current_user
 from app.core.config import get_settings
 from app.core.rate_limit import get_login_failure_limiter, login_failure_key
 from app.core.security import TokenConfigError, checked_jwt_secret
+from app.db.models.invite_token import INVITE, PASSWORD_RESET
 from app.db.models.user import UserRecord
-from app.schemas.auth import ClientSummary, CurrentUserResponse, LoginRequest, LogoutResponse
+from app.schemas.auth import (
+    ClientSummary,
+    CurrentUserResponse,
+    ForgotPasswordRequest,
+    LoginRequest,
+    LogoutResponse,
+    MessageResponse,
+    SetPasswordRequest,
+)
 from app.schemas.users import ChangePasswordRequest
+from app.services import invites
 from app.services.admin_audit import client_ip_from_request, log_admin_action
 from app.services.auth import authenticate, issue_token
+from app.services.email import deliver
+from app.services.email.messages import password_reset_message
 from app.services.user_management import InvalidInputError, change_own_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 INVALID_CREDENTIALS = "Invalid email or password"
+RESET_REQUESTED = "If an account exists for that email, a reset link has been sent."
+PASSWORD_SET = "Password saved. You can sign in now."
 
 
 def to_current_user_response(user: UserRecord) -> CurrentUserResponse:
@@ -135,3 +149,37 @@ async def change_password(
         "user.password_change", request=request, resource_type="user", resource_id=str(user.id)
     )
     return LogoutResponse()
+
+
+async def _set_password_from_link(body: SetPasswordRequest, purpose: str) -> MessageResponse:
+    try:
+        await invites.set_password_with_token(
+            body.token, new_password=body.new_password, purpose=purpose
+        )
+    except (invites.InvalidLinkError, InvalidInputError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return MessageResponse(detail=PASSWORD_SET)
+
+
+@router.post("/password/setup", response_model=MessageResponse)
+async def setup_password(body: SetPasswordRequest) -> MessageResponse:
+    """First password for a user an admin created. The link from the invite email, once."""
+    return await _set_password_from_link(body, INVITE)
+
+
+@router.post("/forgot-password", response_model=MessageResponse)
+async def forgot_password(
+    body: ForgotPasswordRequest, background_tasks: BackgroundTasks
+) -> MessageResponse:
+    """Same reply whether or not the account exists. The link goes out by email only."""
+    issued = await invites.request_password_reset(body.email)
+    if issued is not None:
+        user, token = issued
+        background_tasks.add_task(deliver, password_reset_message(user, token))
+    return MessageResponse(detail=RESET_REQUESTED)
+
+
+@router.post("/reset-password", response_model=MessageResponse)
+async def reset_password(body: SetPasswordRequest) -> MessageResponse:
+    """New password from a reset email, once. Signed-in sessions end."""
+    return await _set_password_from_link(body, PASSWORD_RESET)

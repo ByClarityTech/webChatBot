@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import EmailStr, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -83,6 +83,18 @@ class Settings(BaseSettings):
     session_cookie_secure: bool | None = None
     login_max_failed_attempts: int = 5
     login_failure_window_minutes: int = 15
+
+    # Transactional email through Amazon SES. With no AWS keys, mail goes to the log
+    # instead (see services/email/__init__.py), so local development never needs AWS.
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: SecretStr | None = None
+    ses_region: str = "ap-south-1"
+    ses_configuration_set: str | None = None
+    emails_from_email: EmailStr = "tech@claritytechlabs.com"
+    emails_from_name: str = "Clarity Dental AI"
+    # Lifetimes of single-use links sent by email (services/invites.py).
+    invite_ttl_hours: int = 24
+    password_reset_ttl_hours: int = 1
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
