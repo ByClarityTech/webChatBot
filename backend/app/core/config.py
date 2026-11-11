@@ -73,6 +73,10 @@ class Settings(BaseSettings):
 
     admin_frontend_url: str = "http://localhost:3000"
 
+    # Set only when a trusted reverse proxy sits in front of the API and appends to
+    # X-Forwarded-For. Off means the socket peer is the rate-limit key.
+    trust_x_forwarded_for: bool = False
+
     # Admin app login (email + password). The browser holds a signed JWT (HS256) in an
     # httpOnly cookie; each request still loads the user, so deactivation and password
     # resets take effect at once (users.tokens_valid_after).

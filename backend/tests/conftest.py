@@ -4,7 +4,7 @@
 - Database, Qdrant and worker URLs point at a closed local port: an unmocked call fails
   fast instead of touching a real service.
 - Audit writes are captured in memory (the `audit_rows` fixture) instead of hitting a DB.
-- The login lockout starts empty for every test.
+- The login lockout and the chat rate limit start empty for every test.
 
 Integration tests in tests/integration/ opt back in to a real database via TEST_DATABASE_URL.
 """
@@ -47,6 +47,7 @@ config.get_settings.cache_clear()
 
 from app.core.rate_limit import (  # noqa: E402
     reset_booking_rate_limiter,
+    reset_chat_rate_limiter,
     reset_login_failure_limiter,
 )
 
@@ -73,9 +74,11 @@ else:
 def _fresh_limiters():
     reset_login_failure_limiter()
     reset_booking_rate_limiter()
+    reset_chat_rate_limiter()
     yield
     reset_login_failure_limiter()
     reset_booking_rate_limiter()
+    reset_chat_rate_limiter()
 
 
 @pytest.fixture(autouse=True)

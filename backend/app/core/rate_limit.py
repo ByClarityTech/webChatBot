@@ -1,6 +1,8 @@
 import time
 from threading import Lock
 
+from fastapi import HTTPException, Request, status
+
 from app.core.config import get_settings
 
 _WINDOW_SECONDS = 3600
@@ -120,3 +122,46 @@ def reset_login_failure_limiter() -> None:
 
 def login_failure_key(email: str, client_ip: str) -> str:
     return f"{email.strip().lower()}|{client_ip}"
+
+
+_CHAT_WINDOW_SECONDS = 60
+_CHAT_LIMIT_PER_WINDOW = 30
+_chat_limiter: InMemoryRateLimiter | None = None
+
+
+def _get_chat_limiter() -> InMemoryRateLimiter:
+    global _chat_limiter
+    if _chat_limiter is None:
+        _chat_limiter = InMemoryRateLimiter(
+            limit=_CHAT_LIMIT_PER_WINDOW, window_seconds=_CHAT_WINDOW_SECONDS
+        )
+    return _chat_limiter
+
+
+def reset_chat_rate_limiter() -> None:
+    """Clear limiter state — for tests only."""
+    global _chat_limiter
+    _chat_limiter = None
+
+
+def chat_client_ip(request: Request) -> str:
+    """The socket peer. X-Forwarded-For is used only when TRUST_X_FORWARDED_FOR is on, and then
+    only its last entry: that is the one the single trusted proxy appended. Earlier entries
+    come from the caller and can be anything."""
+    if get_settings().trust_x_forwarded_for:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            last = forwarded.split(",")[-1].strip()
+            if last:
+                return last
+    return request.client.host if request.client else "unknown"
+
+
+def check_chat_rate_limit(request: Request) -> None:
+    """30 chat requests per minute per IP. Raises 429 with Retry-After when exceeded."""
+    if not _get_chat_limiter().allow(chat_client_ip(request)):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many messages. Please wait a moment before sending more.",
+            headers={"Retry-After": str(_CHAT_WINDOW_SECONDS)},
+        )

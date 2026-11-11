@@ -8,7 +8,7 @@ import {
   getWidgetConfig,
   sendMessage,
 } from "@/lib/api";
-import { chatConfig } from "@/lib/chat-config";
+import { chatConfig, MAX_SUGGESTED_QUESTIONS } from "@/lib/chat-config";
 
 import { BookingForm } from "./booking-form";
 
@@ -50,6 +50,31 @@ function loadStoredMessages(client: string): ChatMessage[] {
   }
 }
 
+// Accepts whatever the config endpoint sent. Anything that is not a non-empty string is
+// dropped, duplicates are removed, and the list is capped at the chip limit.
+function cleanSuggestedQuestions(raw: unknown): string[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const questions: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const trimmed = item.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    questions.push(trimmed);
+    if (questions.length === MAX_SUGGESTED_QUESTIONS) {
+      break;
+    }
+  }
+  return questions;
+}
+
 type ChatPanelProps = {
   /** @deprecated Use `embed` instead */
   compact?: boolean;
@@ -69,8 +94,13 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
   // The client whose assistant this is, from the page URL (?client=...).
   const [clientSlug, setClientSlug] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
-  // The client's display name, from the widget config; shown in the header and buttons.
+  // The client's display name, from the widget config; shown in the header.
   const [clientName, setClientName] = useState<string | null>(null);
+  // The practice's starred default questions (PRD FR-07), from the widget config.
+  const [practiceQuestions, setPracticeQuestions] = useState<string[]>([]);
+  // True once the widget config request has finished, either way. Until then no chips are
+  // shown, so the fallback never flashes before the practice's own questions arrive.
+  const [configChecked, setConfigChecked] = useState(false);
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const prevMessageCountRef = useRef(0);
@@ -86,14 +116,19 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
         setThreadId(storedThread);
       }
       setMessages(loadStoredMessages(slug));
-      // Checks the client before the visitor types, and loads its name.
+      // Checks the client before the visitor types, and loads its name and questions.
       getWidgetConfig(slug)
-        .then((config) => setClientName(config.name))
+        .then((config) => {
+          setClientName(config.name);
+          setPracticeQuestions(cleanSuggestedQuestions(config.default_questions));
+          setConfigChecked(true);
+        })
         .catch((configError) => {
           if (configError instanceof ChatUnavailableError) {
             setUnavailable(true);
           }
-          // Any other failure: chat still works, just without the name and buttons.
+          // Any other failure: chat still works, with the fallback questions and no name.
+          setConfigChecked(true);
         });
     }
     setHydrated(true);
@@ -189,11 +224,9 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
   }
 
   const isEmpty = messages.length === 0 && !loading;
-  const suggestedQuestions = clientName
-    ? chatConfig.suggestedQuestionTemplates.map((template) =>
-        template.replaceAll("{clientName}", clientName),
-      )
-    : [];
+  // The practice's own questions when it has starred any; otherwise the dental fallbacks.
+  const suggestedQuestions =
+    practiceQuestions.length > 0 ? practiceQuestions : chatConfig.fallbackSuggestedQuestions;
   // Full page: a fixed-size card. Embedded: fills the iframe the client's site sets.
   const frameClass = isEmbed
     ? "flex h-full min-h-0 flex-col overflow-hidden bg-white"
@@ -212,7 +245,7 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
 
   return (
     <div className={frameClass}>
-      <div className="flex shrink-0 items-center gap-3 bg-[#3B82F6] px-4 py-3">
+      <div className="flex shrink-0 items-center gap-3 bg-[#1D4ED8] px-4 py-3">
         <img
           src="/bot-profile.png"
           alt=""
@@ -233,21 +266,21 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
         }`}
       >
         {isEmpty && (
-          <div className="flex w-full flex-col items-center gap-4">
+          <div className="flex w-full min-w-0 flex-col items-center gap-4">
             {chatConfig.greeting && (
               <p className="text-center text-sm leading-relaxed text-slate-500">
                 {chatConfig.greeting}
               </p>
             )}
-            {suggestedQuestions.length > 0 && (
-              <div className="flex w-full flex-col gap-2">
-                {suggestedQuestions.map((question) => (
+            {configChecked && suggestedQuestions.length > 0 && (
+              <div className="flex w-full min-w-0 flex-col gap-2">
+                {suggestedQuestions.map((question, index) => (
                   <button
-                    key={question}
+                    key={`${index}-${question}`}
                     type="button"
                     disabled={loading}
                     onClick={() => sendUserMessage(question)}
-                    className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-left text-sm text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="min-w-0 whitespace-normal break-words rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-left text-sm text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {question}
                   </button>
@@ -269,7 +302,7 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
                   : "bg-slate-100 text-slate-900"
               }`}
             >
-              <p className="whitespace-pre-wrap">{message.content}</p>
+              <p className="whitespace-pre-wrap break-words">{message.content}</p>
             </div>
           </div>
         ))}
@@ -298,7 +331,12 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
       >
         {error && <p className="mb-2 text-xs text-red-600">{error}</p>}
         <div className="flex gap-2">
+          <label htmlFor="chat-message-input" className="sr-only">
+            Type your question
+          </label>
           <input
+            id="chat-message-input"
+            aria-label="Type your question"
             value={input}
             onChange={(event) => setInput(event.target.value)}
             placeholder={chatConfig.inputPlaceholder}

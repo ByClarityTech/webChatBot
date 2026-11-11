@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessage
 
-from app.api.routes.chat import router
+from app.api.routes.chat import CHAT_UNAVAILABLE_MESSAGE, EMPTY_KB_MESSAGE, router
 from app.db.models.client import ClientRecord
 
 
@@ -173,3 +173,46 @@ async def test_a_thread_continues_only_on_the_client_that_started_it(app):
     assert elsewhere != first
     config = app.state.agent_graph.ainvoke.await_args.kwargs["config"]
     assert config["configurable"]["thread_id"] == elsewhere
+
+
+@pytest.mark.asyncio
+async def test_missing_api_key_returns_a_friendly_503_and_logs_the_cause(app, caplog):
+    app.state.agent_graph.ainvoke = AsyncMock(
+        side_effect=ValueError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
+    )
+
+    response = await post_chat(app, client="example")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == CHAT_UNAVAILABLE_MESSAGE
+    assert "OPENAI_API_KEY" not in response.text
+    assert "LLM_PROVIDER" not in response.text
+    assert "OPENAI_API_KEY is required" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unexpected_error_returns_a_friendly_500_without_internals(app, caplog):
+    app.state.agent_graph.ainvoke = AsyncMock(
+        side_effect=RuntimeError("could not connect to postgresql://app:secret@db-host/chat")
+    )
+
+    response = await post_chat(app, client="example")
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == CHAT_UNAVAILABLE_MESSAGE
+    assert "postgresql" not in response.text
+    assert "secret" not in response.text
+    assert "could not connect" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_empty_answer_with_no_sources_uses_patient_wording(app):
+    app.state.agent_graph.ainvoke = AsyncMock(
+        return_value={"messages": [], "retrieved_docs": [], "intent": "faq", "booking_action": None}
+    )
+
+    response = await post_chat(app, client="example")
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == EMPTY_KB_MESSAGE
+    assert "ingest" not in EMPTY_KB_MESSAGE.lower()

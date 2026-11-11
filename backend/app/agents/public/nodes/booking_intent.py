@@ -14,16 +14,11 @@ BOOKING_INVITE_REPLY = (
     "You'll enter your contact details there so we can send you a calendar invite."
 )
 
-BOOKING_DISABLED_REPLY = (
-    "I can help with questions about our services. "
-    "For scheduling, please use the Book a Demo button on this page."
-)
-
-# The client has no online booking: "no online booking" chosen, or its Google Calendar needs
-# connecting (PRD FR-10: no booking button then).
+# Used when online booking is switched off, or the client has no usable calendar (PRD FR-10:
+# no booking option then).
 BOOKING_UNAVAILABLE_REPLY = (
-    "Online booking isn't available right now. "
-    "Please contact us directly and we'll help you find a time."
+    "Online booking is currently unavailable. "
+    "Please call our office directly to schedule an appointment."
 )
 
 OPEN_BOOKING_FORM_ACTION = "open_booking_form"
@@ -48,7 +43,7 @@ async def booking_intent_node(state: PublicAssistantState) -> dict:
     settings = get_settings()
     if not settings.booking_enabled:
         return {
-            "messages": [AIMessage(content=BOOKING_DISABLED_REPLY)],
+            "messages": [AIMessage(content=BOOKING_UNAVAILABLE_REPLY)],
             "booking_action": None,
         }
 

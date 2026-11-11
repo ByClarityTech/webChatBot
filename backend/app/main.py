@@ -23,6 +23,7 @@ from app.api.routes.admin import (
 from app.core.config import get_settings
 from app.core.csrf import CSRFOriginMiddleware
 from app.db.init import init_db
+from app.services.email import log_email_configuration
 
 # Cookie-authenticated paths that change state; see CSRFOriginMiddleware.
 CSRF_PROTECTED_PREFIXES = ("/api/v1/admin", "/api/v1/auth")
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    log_email_configuration()
     await init_db()
     async with AsyncPostgresSaver.from_conn_string(settings.database_url) as checkpointer:
         await checkpointer.setup()
@@ -46,7 +48,7 @@ def create_app() -> FastAPI:
     logging.basicConfig(level=settings.log_level)
 
     app = FastAPI(
-        title="Public Docs Chatbot API",
+        title="Dental & Orthodontic AI Assistant API",
         description="Embeddable RAG assistant for public website documentation",
         version="0.1.0",
         lifespan=lifespan,

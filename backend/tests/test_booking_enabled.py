@@ -9,7 +9,6 @@ from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agents.public.nodes.booking_intent import (
-    BOOKING_DISABLED_REPLY,
     BOOKING_UNAVAILABLE_REPLY,
     OPEN_BOOKING_FORM_ACTION,
     booking_intent_node,
@@ -41,7 +40,7 @@ async def test_booking_intent_node_when_disabled_returns_no_action(mock_get_sett
     result = await booking_intent_node(_base_state())
 
     assert result["booking_action"] is None
-    assert result["messages"][0].content == BOOKING_DISABLED_REPLY
+    assert result["messages"][0].content == BOOKING_UNAVAILABLE_REPLY
 
 
 @pytest.mark.asyncio
@@ -91,6 +90,12 @@ async def test_no_booking_form_when_the_client_has_no_online_booking(
 
     assert result["booking_action"] is None
     assert result["messages"][0].content == BOOKING_UNAVAILABLE_REPLY
+
+
+def test_unavailable_booking_reply_is_patient_facing():
+    # Regression: the reply once pointed visitors at a "Book a Demo" button that does not exist.
+    assert "demo" not in BOOKING_UNAVAILABLE_REPLY.lower()
+    assert "call our office" in BOOKING_UNAVAILABLE_REPLY.lower()
 
 
 @pytest.fixture
@@ -160,7 +165,7 @@ async def test_chat_booking_message_no_action_when_disabled(monkeypatch):
     mock_graph = MagicMock()
     mock_graph.ainvoke = AsyncMock(
         return_value={
-            "messages": [AIMessage(content=BOOKING_DISABLED_REPLY)],
+            "messages": [AIMessage(content=BOOKING_UNAVAILABLE_REPLY)],
             "retrieved_docs": [],
             "intent": "booking",
             "booking_action": None,
