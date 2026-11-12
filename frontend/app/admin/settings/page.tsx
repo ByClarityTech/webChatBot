@@ -1,3 +1,4 @@
+import { AllowedDomainsForm } from "@/components/admin/allowed-domains-form";
 import { BusinessHoursForm } from "@/components/admin/business-hours-form";
 
 export default function AdminSettingsPage() {
@@ -11,6 +12,11 @@ export default function AdminSettingsPage() {
 
       <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6">
         <BusinessHoursForm />
+      </div>
+
+      {/* Renders nothing for Support users, who cannot change the allowed sites. */}
+      <div className="mt-8">
+        <AllowedDomainsForm />
       </div>
     </div>
   );

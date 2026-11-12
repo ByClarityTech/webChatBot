@@ -1,20 +1,27 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.api.deps.auth import require_access
 from app.booking.config import get_business_hours_config
 from app.core.permissions import Area
 from app.db.models.admin_settings import get_client_business_hours, save_client_business_hours
+from app.db.models.client import set_client_allowed_domains
 from app.db.models.user import UserRecord
-from app.schemas.settings import BusinessHoursResponse, BusinessHoursUpdateRequest
+from app.schemas.settings import (
+    AllowedDomainsResponse,
+    AllowedDomainsUpdateRequest,
+    BusinessHoursResponse,
+    BusinessHoursUpdateRequest,
+)
 from app.services.admin_audit import log_admin_action
 from app.services.client_scope import resolve_client_scope
 
 router = APIRouter(prefix="/admin/settings", tags=["admin-settings"])
 
 HoursActor = Annotated[UserRecord, Depends(require_access(Area.business_hours))]
+DomainsActor = Annotated[UserRecord, Depends(require_access(Area.widget_domains))]
 # Super Admins name the client; others may leave it out (always their own client).
 ClientIdQuery = Annotated[UUID | None, Query()]
 
@@ -69,3 +76,35 @@ async def update_business_hours_settings(
         client_id=client.id,
     )
     return _to_response(config, updated_at=record.updated_at)
+
+
+@router.get("/allowed-domains", response_model=AllowedDomainsResponse)
+async def get_allowed_domains(actor: DomainsActor, client_id: ClientIdQuery = None):
+    """The sites allowed to embed the widget and call its API. Empty means none (production)."""
+    client = await resolve_client_scope(actor, client_id)
+    return AllowedDomainsResponse(domains=client.allowed_domains)
+
+
+@router.put("/allowed-domains", response_model=AllowedDomainsResponse)
+async def update_allowed_domains(
+    body: AllowedDomainsUpdateRequest,
+    request: Request,
+    actor: DomainsActor,
+    client_id: ClientIdQuery = None,
+):
+    """Replaces the list. Entries are cleaned first (scheme, path and default port removed)."""
+    client = await resolve_client_scope(actor, client_id)
+    try:
+        saved = await set_client_allowed_domains(client.id, body.domains)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if saved is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+    await log_admin_action(
+        "settings.allowed_domains_update",
+        resource_type="settings",
+        resource_id="allowed_domains",
+        request=request,
+        client_id=client.id,
+    )
+    return AllowedDomainsResponse(domains=saved.allowed_domains)

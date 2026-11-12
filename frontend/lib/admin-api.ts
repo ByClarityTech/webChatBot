@@ -234,6 +234,24 @@ export function updateClient(
   );
 }
 
+// ---------------------------------------------------------------- widget allowed websites
+// Super Admins pass the client; Admins leave it out (always their own client). Saving replaces
+// the whole list. A 400 carries the API's message for the first bad entry.
+
+export type AllowedDomains = { domains: string[] };
+
+export function getAllowedDomains(clientId?: string): Promise<AllowedDomains> {
+  return adminJson<AllowedDomains>(withClient("/api/v1/admin/settings/allowed-domains", clientId));
+}
+
+export function saveAllowedDomains(domains: string[], clientId?: string): Promise<AllowedDomains> {
+  return adminJson<AllowedDomains>(
+    withClient("/api/v1/admin/settings/allowed-domains", clientId),
+    "PUT",
+    { domains },
+  );
+}
+
 // ---------------------------------------------------------------- documents
 // Super Admins pass the client; Admins leave it out (always their own client).
 

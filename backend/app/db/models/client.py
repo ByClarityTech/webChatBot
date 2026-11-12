@@ -7,19 +7,54 @@ from psycopg.types.json import Jsonb
 
 from app.db.session import get_db_connection
 
-# host or *.host, optional :port. Lowercase letters, digits and hyphens only, so a pattern
-# can never carry spaces, quotes or ';' into the CSP header built from it.
-_DOMAIN_PATTERN = re.compile(r"^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*(:\d{1,5})?$")
+# A host (clinic.com, localhost) or a wildcard over at least two labels (*.clinic.com), with an
+# optional port. Lowercase letters, digits and hyphens only, so a pattern can never carry
+# spaces, quotes or ';' into the CSP header built from it. *.com is refused: it would cover
+# every .com site.
+_DOMAIN_PATTERN = re.compile(
+    r"^(?:\*\.[a-z0-9-]+(?:\.[a-z0-9-]+)+|[a-z0-9-]+(?:\.[a-z0-9-]+)*)(?::(\d{1,5}))?$"
+)
+_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://")
+# Browsers leave these out of an Origin header, so a saved ':80' or ':443' would never match.
+_DEFAULT_PORTS = frozenset({"80", "443"})
 MAX_ALLOWED_DOMAINS = 50
 
 
+def clean_domain_entry(raw: str) -> str:
+    """What a person typed, reduced to a host pattern. Does not validate the result.
+
+    'https://www.Clinic.com/contact?x=1' becomes 'www.clinic.com'; 'clinic.com:443' becomes
+    'clinic.com'. Anything the pattern cannot allow is left in place for the validator.
+    """
+    value = raw.strip().lower()
+    value = _SCHEME.sub("", value)
+    value = re.split(r"[/?#]", value, maxsplit=1)[0]
+    value = value.rstrip(".")
+    host, separator, port = value.rpartition(":")
+    if separator and port in _DEFAULT_PORTS:
+        value = host
+    return value
+
+
 def normalize_allowed_domains(patterns: list[str]) -> list[str]:
-    """Lowercase, strip and de-duplicate patterns. Raises ValueError on a malformed one."""
+    """Clean, validate, de-duplicate and cap a client's patterns. Blank entries are skipped.
+
+    Raises ValueError with the offending entry in the message.
+    """
     cleaned: list[str] = []
     for raw in patterns:
-        pattern = raw.strip().lower()
-        if not _DOMAIN_PATTERN.fullmatch(pattern):
-            raise ValueError(f"Invalid domain pattern: {raw!r}")
+        pattern = clean_domain_entry(raw)
+        if not pattern:
+            continue
+        match = _DOMAIN_PATTERN.fullmatch(pattern)
+        if match is None:
+            raise ValueError(
+                f"{raw.strip()!r} is not a site name. Use clinic.com, *.clinic.com "
+                "or localhost:3000."
+            )
+        port = match.group(1)
+        if port is not None and not 1 <= int(port) <= 65535:
+            raise ValueError(f"{raw.strip()!r} has a port outside 1 to 65535")
         if pattern not in cleaned:
             cleaned.append(pattern)
     if len(cleaned) > MAX_ALLOWED_DOMAINS:

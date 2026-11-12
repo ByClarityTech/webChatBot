@@ -153,8 +153,8 @@ def test_localhost_is_allowed_in_development_only(monkeypatch):
 def test_normalize_rejects_patterns_that_could_break_the_csp_header():
     with pytest.raises(ValueError):
         normalize_allowed_domains(["example.com; script-src *"])
-    with pytest.raises(ValueError):
-        normalize_allowed_domains(["https://example.com"])
+    # A pasted URL is cleaned, not refused: the scheme and path go, the host stays.
+    assert normalize_allowed_domains(["https://example.com/contact"]) == ["example.com"]
     with pytest.raises(ValueError):
         normalize_allowed_domains(["exa mple.com"])
 

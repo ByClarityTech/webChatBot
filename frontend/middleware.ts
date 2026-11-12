@@ -3,8 +3,9 @@ import type { NextRequest } from "next/server";
 
 const BACKEND_URL = process.env.INTERNAL_BACKEND_URL || "http://localhost:8000";
 const CLIENT_SLUG = /^[a-z0-9][a-z0-9-]{1,98}$/;
-// Same shape the backend accepts (app/db/models/client.py): host or *.host, optional :port.
-const HOST_PATTERN = /^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*(:\d{1,5})?$/;
+// Same shape the backend accepts (app/db/models/client.py): a host, or *.host over at least two
+// labels, with an optional :port. A bare wildcard such as *.com is refused.
+const HOST_PATTERN = /^(?:\*\.[a-z0-9-]+(?:\.[a-z0-9-]+)+|[a-z0-9-]+(?:\.[a-z0-9-]+)*)(?::\d{1,5})?$/;
 const DENY_FRAMING = "frame-ancestors 'none'";
 
 function frameAncestorsFor(domains: unknown): string {
@@ -12,7 +13,10 @@ function frameAncestorsFor(domains: unknown): string {
   const safe = domains.filter(
     (d): d is string => typeof d === "string" && HOST_PATTERN.test(d),
   );
-  return safe.length ? `frame-ancestors 'self' ${safe.join(" ")}` : `frame-ancestors 'self'`;
+  if (safe.length) return `frame-ancestors 'self' ${safe.join(" ")}`;
+  // No sites allowed: production frames nothing, matching the API's 403. Development keeps
+  // this site able to frame its own pages.
+  return process.env.NODE_ENV === "production" ? DENY_FRAMING : `frame-ancestors 'self'`;
 }
 
 export async function middleware(request: NextRequest) {

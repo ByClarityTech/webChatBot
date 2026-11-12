@@ -18,6 +18,16 @@ class BusinessHoursResponse(BaseModel):
     updated_at: datetime | None = None
 
 
+class AllowedDomainsResponse(BaseModel):
+    domains: list[str] = Field(..., description="Saved host patterns, e.g. clinic.com")
+
+
+class AllowedDomainsUpdateRequest(BaseModel):
+    """Replaces the whole list. An empty list clears it, and production then refuses the widget."""
+
+    domains: list[str] = Field(default_factory=list, max_length=50)
+
+
 class BusinessHoursUpdateRequest(BaseModel):
     business_days: list[int] = Field(..., min_length=1)
     start_time: str = Field(..., pattern=r"^\d{2}:\d{2}$")

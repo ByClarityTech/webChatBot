@@ -17,6 +17,7 @@ class Area(str, Enum):
     audit_log = "audit_log"
     users = "users"
     clients = "clients"
+    widget_domains = "widget_domains"
 
 
 # Who may use each admin area (decision 7). Client scoping ("own client only") is a
@@ -31,6 +32,9 @@ AREA_ACCESS: dict[Area, frozenset[str]] = {
     Area.audit_log: frozenset({SUPER_ADMIN, ADMIN}),
     Area.users: frozenset({SUPER_ADMIN, ADMIN}),
     Area.clients: frozenset({SUPER_ADMIN}),
+    # Who may set the sites that can embed the widget. Admins only reach their own client,
+    # through resolve_client_scope. Support cannot change it.
+    Area.widget_domains: frozenset({SUPER_ADMIN, ADMIN}),
 }
 
 
