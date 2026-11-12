@@ -1,0 +1,11 @@
+Callback request
+
+A visitor asked for a call back at $practice_name.
+
+Reason: $source_label.
+
+The details are not included in this email. Sign in to see the request.
+
+Open inbox: $inbox_url
+
+You receive this because you are on the notification list for $practice_name.

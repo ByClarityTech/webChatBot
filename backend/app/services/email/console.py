@@ -1,6 +1,6 @@
 import logging
 
-from app.services.email.base import mask_email
+from app.services.email.base import EmailDeliveryError, mask_email
 
 logger = logging.getLogger(__name__)
 
@@ -9,7 +9,8 @@ class ConsoleEmailSender:
     """Used when AWS keys are missing. Never sends mail.
 
     In development the body is logged, including single-use links, so a developer can click
-    them. Anywhere else the body is withheld and the log says the message was not sent.
+    them, and the send counts as done. Anywhere else nothing is logged but the fact, and the
+    send fails without retry: a notification must not be marked sent when nothing went out.
     """
 
     def __init__(self, *, app_env: str) -> None:
@@ -24,6 +25,5 @@ class ConsoleEmailSender:
                 text_content,
             )
             return None
-        log = logger.error if self._app_env == "production" else logger.warning
-        log("Email not sent: SES is not configured. subject=%s", subject)
-        return None
+        logger.error("Email not sent: SES is not configured. subject=%s", subject)
+        raise EmailDeliveryError("SES_NOT_CONFIGURED", retryable=False)

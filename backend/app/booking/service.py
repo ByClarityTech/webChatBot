@@ -39,6 +39,7 @@ from app.integrations.google.calendar_client import (
     delete_calendar_event,
 )
 from app.integrations.google.oauth import is_google_calendar_connected
+from app.services.notifications import enqueue_booking
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,31 @@ class CancelResult:
 
 
 async def create_booking(
+    *,
+    client_id: UUID,
+    name: str,
+    phone: str,
+    email: str,
+    slot_start: datetime,
+    thread_id: UUID | None = None,
+) -> BookingRecord:
+    record = await _create_booking(
+        client_id=client_id,
+        name=name,
+        phone=phone,
+        email=email,
+        slot_start=slot_start,
+        thread_id=thread_id,
+    )
+    # The booking is already confirmed. A failed notification must not undo it.
+    try:
+        await enqueue_booking(client_id, record.id)
+    except Exception as exc:
+        logger.error("Booking notification not queued: error=%s", type(exc).__name__)
+    return record
+
+
+async def _create_booking(
     *,
     client_id: UUID,
     name: str,

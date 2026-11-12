@@ -42,6 +42,9 @@ from app.api.routes.admin import (
     inbox as admin_inbox,
 )
 from app.api.routes.admin import (
+    notification_recipients as admin_notification_recipients,
+)
+from app.api.routes.admin import (
     settings as admin_settings,
 )
 from app.api.routes.admin import (
@@ -52,6 +55,7 @@ from app.core.csrf import CSRFOriginMiddleware
 from app.db.init import init_db
 from app.services import live_chat
 from app.services.email import log_email_configuration
+from app.services.notifications import run_dispatcher
 
 # Cookie-authenticated paths that change state; see CSRFOriginMiddleware.
 CSRF_PROTECTED_PREFIXES = ("/api/v1/admin", "/api/v1/auth")
@@ -66,6 +70,8 @@ async def lifespan(app: FastAPI):
     await init_db()
     # Times out overdue live handovers into callbacks every 15 seconds (single-process broker).
     sweeper = asyncio.create_task(live_chat.run_sweeper())
+    # Sends queued notification emails, with retries (FR-34).
+    notifier = asyncio.create_task(run_dispatcher())
     try:
         async with AsyncPostgresSaver.from_conn_string(settings.database_url) as checkpointer:
             await checkpointer.setup()
@@ -73,9 +79,10 @@ async def lifespan(app: FastAPI):
             logger.info("Public assistant graph ready")
             yield
     finally:
-        sweeper.cancel()
-        with suppress(asyncio.CancelledError):
-            await sweeper
+        for task in (sweeper, notifier):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 def create_app() -> FastAPI:
@@ -112,6 +119,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_faq_gaps.router, prefix="/api/v1")
     app.include_router(admin_inbox.router, prefix="/api/v1")
     app.include_router(admin_inbox.callbacks_router, prefix="/api/v1")
+    app.include_router(admin_notification_recipients.router, prefix="/api/v1")
     app.include_router(live_chat_routes.router, prefix="/api/v1")
     app.include_router(widget.router, prefix="/api/v1")
     app.include_router(user_auth.router, prefix="/api/v1")

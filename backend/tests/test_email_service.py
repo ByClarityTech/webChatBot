@@ -124,9 +124,12 @@ def test_console_logs_the_link_in_development(caplog):
 
 
 def test_console_withholds_the_body_outside_development(caplog):
+    # A send that did not happen must fail, so a notification is never marked as sent.
     sender = ConsoleEmailSender(app_env="production")
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.INFO), pytest.raises(EmailDeliveryError) as raised:
         sender.send_email("jane@clinic.com", "Subject", "<p>x</p>", f"Link: token={TOKEN}")
+    assert raised.value.code == "SES_NOT_CONFIGURED"
+    assert raised.value.retryable is False
     assert TOKEN not in caplog.text
     assert "not sent" in caplog.text
 
@@ -178,7 +181,8 @@ def test_message_rejected_is_not_retried_and_leaks_nothing(caplog):
         _ses(client).send_email("jane@clinic.com", "Hi", f"<p>{TOKEN}</p>", f"token {TOKEN}")
 
     assert client.send_email.call_count == 1
-    assert str(raised.value) == "SES error MessageRejected"
+    assert str(raised.value) == "SES_REJECTED"
+    assert raised.value.retryable is False
     assert raised.value.__cause__ is None and raised.value.__suppress_context__
     assert "jane@clinic.com" not in caplog.text
     assert TOKEN not in caplog.text

@@ -1,0 +1,9 @@
+New booking request
+
+A visitor asked for an appointment through the website assistant at $practice_name.
+
+The details are not included in this email. Sign in to see the request.
+
+Open bookings: $bookings_url
+
+You receive this because you are on the notification list for $practice_name.

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+from app.db.models.notification_outbox import CALLBACK_SUBJECT, KIND_CALLBACK, enqueue_on
 from app.db.session import get_db_connection
 
 STATUS_OPEN = "open"
@@ -59,6 +60,16 @@ async def ensure_open_callback(
                     (client_id, session_id, source, now),
                 )
             row = await cur.fetchone()
+            if row:
+                # Same transaction: the email is queued if and only if the callback exists.
+                await enqueue_on(
+                    cur,
+                    client_id=client_id,
+                    kind=KIND_CALLBACK,
+                    source_id=row[0],
+                    subject=CALLBACK_SUBJECT,
+                    now=now,
+                )
         await conn.commit()
     return CallbackRequest(*row) if row else None
 

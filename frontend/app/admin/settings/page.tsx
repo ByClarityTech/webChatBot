@@ -1,5 +1,6 @@
 import { AllowedDomainsForm } from "@/components/admin/allowed-domains-form";
 import { BusinessHoursForm } from "@/components/admin/business-hours-form";
+import { NotificationRecipientsForm } from "@/components/admin/notification-recipients-form";
 import { PracticeContactForm } from "@/components/admin/practice-contact-form";
 
 export default function AdminSettingsPage() {
@@ -17,6 +18,10 @@ export default function AdminSettingsPage() {
 
       <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6">
         <PracticeContactForm />
+      </div>
+
+      <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6">
+        <NotificationRecipientsForm />
       </div>
 
       {/* Renders nothing for Support users, who cannot change the allowed sites. */}

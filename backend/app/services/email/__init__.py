@@ -9,7 +9,7 @@ import logging
 from app.core.config import get_settings
 from app.services.email.base import EmailDeliveryError, EmailMessage, EmailSender
 from app.services.email.console import ConsoleEmailSender
-from app.services.email.ses import SesEmailSender
+from app.services.email.ses import DEFAULT_MAX_ATTEMPTS, SesEmailSender
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ def _ses_configured() -> bool:
     return bool(settings.aws_access_key_id and settings.aws_secret_access_key)
 
 
-def get_email_sender() -> EmailSender:
+def get_email_sender(max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> EmailSender:
     settings = get_settings()
     if _ses_configured():
         return SesEmailSender(
@@ -29,6 +29,7 @@ def get_email_sender() -> EmailSender:
             from_email=settings.emails_from_email,
             from_name=settings.emails_from_name,
             configuration_set=settings.ses_configuration_set,
+            max_attempts=max_attempts,
         )
     return ConsoleEmailSender(app_env=settings.app_env)
 
