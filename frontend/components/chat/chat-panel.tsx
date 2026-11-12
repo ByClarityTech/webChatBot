@@ -17,6 +17,8 @@ import {
   submitShareConsent,
 } from "@/lib/api";
 import { chatConfig, MAX_SUGGESTED_QUESTIONS } from "@/lib/chat-config";
+import { leaveLive, LiveMessage, LiveSnapshot, openLiveStream, requestLive } from "@/lib/live-chat-api";
+import { consumeSse } from "@/lib/sse";
 
 import { BookingForm } from "./booking-form";
 import { FallbackCard } from "./fallback-card";
@@ -28,9 +30,19 @@ type ChatMessage = {
   content: string;
   /** Contact options under an answer the knowledge base could not give. */
   fallback?: FallbackCardData;
+  /** A message a staff member typed in the live handover. */
+  speaker?: "staff";
 };
 
-const LIVE_CHAT_NOTICE = "Live chat is not available yet. Please call or text the office.";
+const LIVE_WAITING_MESSAGE = "Connecting you to a member of our team. Please wait a moment.";
+const LIVE_JOINED_MESSAGE = "A member of our team has joined the chat.";
+const LIVE_NOBODY_NOTICE =
+  "No one from our team is online right now. Leave your details and the office will call you back.";
+const LIVE_TIMEOUT_NOTICE =
+  "No one was able to reply in time. Leave your details and the office will call you back.";
+const LIVE_ENDED_NOTICE = "The chat with our team has ended. You can keep asking questions here.";
+const LIVE_LOST_NOTICE = "We lost the connection to our team. You can keep asking questions here.";
+const LIVE_LEFT_NOTICE = "You left the chat with our team.";
 const CALLBACK_SAVED_NOTICE = "Thank you. The office has your details for a callback.";
 
 type Phase = "loading" | "choice" | "share" | "chat" | "unavailable";
@@ -114,6 +126,10 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
   // The share form serves two purposes: sharing details, or asking for a callback.
   const [shareKind, setShareKind] = useState<"share_contact" | "callback">("share_contact");
   const [callbackOffer, setCallbackOffer] = useState<ConsentOffer | null>(null);
+  // Live handover with a person. The token stays in memory: never in storage or in a URL.
+  const [liveMode, setLiveMode] = useState<"idle" | "waiting" | "live">("idle");
+  const liveRef = useRef<{ handoverId: string; token: string; controller: AbortController } | null>(null);
+  const seenStaffIds = useRef<Set<string>>(new Set());
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const prevMessageCountRef = useRef(0);
@@ -239,6 +255,7 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
     setNotice(null);
     setMessages([]);
     setShowBookingForm(false);
+    endLiveLocally();
     try {
       const started = await startSession(clientSlug);
       setThreadId(started.thread_id);
@@ -258,6 +275,7 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
   /** Back to the welcome choice, with a reason shown above it. */
   function returnToChoice(reason: string) {
     forgetStoredConversation();
+    endLiveLocally();
     setMessages([]);
     setThreadId(null);
     setSessionId(null);
@@ -354,6 +372,116 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
     ]);
   }
 
+  // Drop the live connection on this side. The server ends the handover on its own terms.
+  function endLiveLocally() {
+    liveRef.current?.controller.abort();
+    liveRef.current = null;
+    setLiveMode("idle");
+  }
+
+  useEffect(() => () => liveRef.current?.controller.abort(), []);
+
+  function addStaffMessage(message: LiveMessage) {
+    if (seenStaffIds.current.has(message.id)) {
+      return;
+    }
+    seenStaffIds.current.add(message.id);
+    setMessages((current) => [
+      ...current,
+      { id: message.id, role: "assistant", speaker: "staff", content: message.body },
+    ]);
+  }
+
+  function onLiveEvent(event: string, data: unknown) {
+    if (event === "state") {
+      const snapshot = data as LiveSnapshot;
+      if (snapshot.handover.status === "accepted") {
+        setLiveMode("live");
+      } else if (snapshot.handover.status === "ended" || snapshot.handover.status === "timed_out") {
+        endLiveLocally();
+        setNotice(LIVE_ENDED_NOTICE);
+      }
+      snapshot.messages.filter((message) => message.sender === "staff").forEach(addStaffMessage);
+    } else if (event === "handover_accepted") {
+      setLiveMode("live");
+      setMessages((current) => [
+        ...current,
+        { id: crypto.randomUUID(), role: "assistant", content: LIVE_JOINED_MESSAGE },
+      ]);
+    } else if (event === "agent_message") {
+      addStaffMessage(data as LiveMessage);
+    } else if (event === "handover_timeout") {
+      endLiveLocally();
+      void chooseCallback();
+      setNotice(LIVE_TIMEOUT_NOTICE);
+    } else if (event === "handover_ended") {
+      endLiveLocally();
+      setNotice(LIVE_ENDED_NOTICE);
+    }
+  }
+
+  function followLive(handoverId: string, token: string) {
+    if (!clientSlug) {
+      return;
+    }
+    const controller = new AbortController();
+    liveRef.current = { handoverId, token, controller };
+    openLiveStream(clientSlug, handoverId, token, controller.signal)
+      .then((response) => consumeSse(response, onLiveEvent, controller.signal))
+      .catch(() => undefined)
+      .finally(() => {
+        // The stream closed without a final event: the connection dropped.
+        if (!controller.signal.aborted && liveRef.current?.controller === controller) {
+          liveRef.current = null;
+          setLiveMode("idle");
+          setNotice(LIVE_LOST_NOTICE);
+        }
+      });
+  }
+
+  /** Asks for a person. Nobody online means a callback instead. */
+  async function requestLiveChat() {
+    if (!clientSlug || !threadId || !sessionId || liveRef.current) {
+      return;
+    }
+    setNotice(null);
+    try {
+      const result = await requestLive(clientSlug, threadId, sessionId);
+      if (result.status === "callback" || !result.handover_id || !result.token) {
+        void chooseCallback();
+        setNotice(LIVE_NOBODY_NOTICE);
+        return;
+      }
+      seenStaffIds.current = new Set();
+      setLiveMode("waiting");
+      setMessages((current) => [
+        ...current,
+        { id: crypto.randomUUID(), role: "assistant", content: LIVE_WAITING_MESSAGE },
+      ]);
+      followLive(result.handover_id, result.token);
+    } catch (liveError) {
+      if (liveError instanceof ApiRequestError && liveError.status === 409) {
+        returnToChoice(CLOSED_NOTICE);
+      } else {
+        setNotice(
+          liveError instanceof Error
+            ? liveError.message
+            : "Could not reach our team. Please call or text the office.",
+        );
+      }
+    }
+  }
+
+  function leaveLiveChat() {
+    const live = liveRef.current;
+    if (!live || !clientSlug) {
+      return;
+    }
+    void leaveLive(clientSlug, live.handoverId, live.token);
+    endLiveLocally();
+    setNotice(LIVE_LEFT_NOTICE);
+  }
+
   async function sendUserMessage(text: string) {
     const trimmed = text.trim();
     if (!trimmed || loading || !clientSlug) {
@@ -405,15 +533,18 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
       if (response.session_id) {
         setSessionId(response.session_id);
       }
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: response.reply,
-          fallback: response.fallback ?? undefined,
-        },
-      ]);
+      // While a person is handling the chat, the server may return no reply text.
+      if (response.reply.trim()) {
+        setMessages((current) => [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: response.reply,
+            fallback: response.fallback ?? undefined,
+          },
+        ]);
+      }
       if (response.action === "open_booking_form") {
         setShowBookingForm(true);
       }
@@ -473,6 +604,18 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
         <p className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900" role="status">
           {notice}
         </p>
+      )}
+
+      {liveMode !== "idle" && (
+        <div
+          className="flex shrink-0 items-center justify-between gap-2 bg-emerald-50 px-4 py-2 text-xs text-emerald-900"
+          role="status"
+        >
+          <span>{liveMode === "waiting" ? "Waiting for a member of our team..." : "You are chatting with our team."}</span>
+          <button type="button" onClick={leaveLiveChat} className="shrink-0 underline">
+            Leave chat
+          </button>
+        </div>
       )}
 
       {phase === "choice" && (
@@ -554,6 +697,9 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
                 key={message.id}
                 className={`flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}
               >
+                {message.speaker === "staff" && (
+                  <p className="mb-1 text-xs font-medium text-slate-500">Our team</p>
+                )}
                 <div
                   className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed ${
                     message.role === "user"
@@ -567,7 +713,7 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
                   <FallbackCard
                     card={message.fallback}
                     onCallback={chooseCallback}
-                    onLiveChat={() => setNotice(LIVE_CHAT_NOTICE)}
+                    onLiveChat={requestLiveChat}
                     disabled={loading}
                   />
                 )}

@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from app.api.deps.auth import optional_admin_user
 from app.core.origin_check import verify_client_origin
+from app.db.models.live_handover import get_open_handover_for_session as get_active_session_for
 from app.schemas.consent import (
     ConsentOfferResponse,
     SessionCloseRequest,
@@ -22,6 +23,7 @@ from app.schemas.consent import (
     ShareConsentResponse,
 )
 from app.schemas.users import SLUG_PATTERN
+from app.services import live_chat as live
 from app.services.chat_sessions import active_session_for, close_session, start_new_session
 from app.services.consent import (
     NO_APPROVED_WORDING_MESSAGE,
@@ -76,7 +78,7 @@ async def consent_text(
     client: ClientQuery,
     purpose: Annotated[Literal["share_contact", "callback"], Query()] = "share_contact",
 ) -> ConsentOfferResponse:
-    """The approved wording for sharing details or asking for a callback, practice name filled in."""
+    """Approved wording for sharing details or asking for a callback, with the practice named."""
     record = await get_active_client(client)
     verify_client_origin(request, record)
     offer = await offered_wording(record.name, purpose)
@@ -125,4 +127,8 @@ async def close(body: SessionCloseRequest, request: Request) -> SessionCloseResp
     client = await get_active_client(body.client)
     verify_client_origin(request, client)
     ended = await close_session(body.thread_id, client.id)
+    # A live chat with staff ends with the conversation.
+    open_handover = await get_active_session_for(body.thread_id, client.id)
+    if open_handover is not None:
+        await live.visitor_ends(open_handover)
     return SessionCloseResponse(ended=ended)

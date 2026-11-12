@@ -44,5 +44,5 @@ class ChatResponse(BaseModel):
     session_reset: bool = False
     # Where the reply came from: the model, an approved FAQ, the fallback card, a safety
     # bypass, or the booking card.
-    answer_source: Literal["model", "faq", "fallback", "safety", "booking"] | None = None
+    answer_source: Literal["model", "faq", "fallback", "safety", "booking", "live"] | None = None
     fallback: FallbackCard | None = None

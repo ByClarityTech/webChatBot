@@ -9,6 +9,7 @@ import hashlib
 from dataclasses import dataclass
 from uuid import UUID
 
+from app.db.models.callback_request import SOURCE_IN_CHAT, ensure_open_callback
 from app.db.models.chat_session import (
     ChatSession,
     get_session,
@@ -16,6 +17,7 @@ from app.db.models.chat_session import (
     upsert_session_contact,
 )
 from app.db.models.consent import (
+    CALLBACK,
     SHARE_CONTACT,
     ConsentText,
     approve_consent_text,
@@ -138,3 +140,10 @@ async def record_share_consent(
         is_current_patient=is_current_patient,
     )
     await mark_session_known(session.session_id, version)
+    if purpose == CALLBACK:
+        await ensure_open_callback(
+            client_id=session.client_id,
+            session_id=session.session_id,
+            source=SOURCE_IN_CHAT,
+            now=utc_now(),
+        )

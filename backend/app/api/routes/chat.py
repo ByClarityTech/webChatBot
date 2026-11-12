@@ -7,10 +7,12 @@ from app.agents.public.nodes.safety import safety_node
 from app.api.deps.auth import optional_admin_user
 from app.core.origin_check import verify_client_origin
 from app.core.rate_limit import check_chat_rate_limit
-from app.core.safety import detect_language, pick
+from app.core.safety import EMERGENCY_REPLY, check_urgent, detect_language, pick
 from app.db.models.client import ClientRecord
+from app.db.models.live_handover import get_open_handover_for_session
 from app.schemas.chat import ChatRequest, ChatResponse, FallbackCard, SourceCitation
 from app.services import fallback as fallback_service
+from app.services import live_chat as live
 from app.services.chat_sessions import SessionHandle, resolve_for_message, utc_now
 from app.services.keyword_answer import answer_from_faqs
 from app.services.knowledge_gaps import record_gap
@@ -50,6 +52,10 @@ CHAT_UNAVAILABLE_MESSAGE_ES = (
     "Lo siento, tengo problemas para procesar su solicitud en este momento. Por favor, "
     "inténtelo de nuevo en un momento o comuníquese directamente con la oficina."
 )
+
+
+LIVE_PENDING_EN = "Thanks. A member of our team will reply shortly."
+LIVE_PENDING_ES = "Gracias. Un miembro de nuestro equipo le responderá en breve."
 
 
 def _top_score(docs: list[dict]) -> float | None:
@@ -109,6 +115,23 @@ async def _degraded_reply(
     )
 
 
+async def _live_turn(handover, session: SessionHandle, text: str, language: str) -> ChatResponse:
+    await live.visitor_message(handover, text)
+    if check_urgent(text):
+        # Staff see the message too; the visitor gets the emergency text straight away.
+        return _response(
+            session,
+            reply=EMERGENCY_REPLY,
+            source="safety",
+            safety="urgent",
+        )
+    if handover.status == "pending":
+        reply = pick(language, LIVE_PENDING_EN, LIVE_PENDING_ES)
+    else:
+        reply = ""
+    return _response(session, reply=reply, source="live")
+
+
 def _response(
     session: SessionHandle,
     *,
@@ -146,6 +169,13 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
     thread_id = str(session.thread_id)
     text = request_body.message.strip()
     language = detect_language(text)
+
+    # A live handover owns the conversation: the message goes to staff, never to the model.
+    open_handover = (
+        None if session.reset else await get_open_handover_for_session(session.session_id)
+    )
+    if open_handover is not None:
+        return await _live_turn(open_handover, session, text, language)
 
     try:
         result = await graph.ainvoke(

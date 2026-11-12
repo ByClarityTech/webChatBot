@@ -1,5 +1,6 @@
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +9,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from app.agents.public.graph import build_public_assistant_graph
 from app.api.routes import auth as user_auth
 from app.api.routes import booking, chat, chat_session, health, widget
+from app.api.routes import live_chat as live_chat_routes
 from app.api.routes.admin import (
     audit_log,
     google_oauth,
@@ -23,7 +25,6 @@ from app.api.routes.admin import (
 )
 from app.api.routes.admin import (
     consent as admin_consent,
-    faq_gaps as admin_faq_gaps,
 )
 from app.api.routes.admin import (
     dashboard as admin_dashboard,
@@ -32,7 +33,13 @@ from app.api.routes.admin import (
     documents as admin_documents,
 )
 from app.api.routes.admin import (
+    faq_gaps as admin_faq_gaps,
+)
+from app.api.routes.admin import (
     faqs as admin_faqs,
+)
+from app.api.routes.admin import (
+    inbox as admin_inbox,
 )
 from app.api.routes.admin import (
     settings as admin_settings,
@@ -43,6 +50,7 @@ from app.api.routes.admin import (
 from app.core.config import get_settings
 from app.core.csrf import CSRFOriginMiddleware
 from app.db.init import init_db
+from app.services import live_chat
 from app.services.email import log_email_configuration
 
 # Cookie-authenticated paths that change state; see CSRFOriginMiddleware.
@@ -56,11 +64,18 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     log_email_configuration()
     await init_db()
-    async with AsyncPostgresSaver.from_conn_string(settings.database_url) as checkpointer:
-        await checkpointer.setup()
-        app.state.agent_graph = build_public_assistant_graph(checkpointer)
-        logger.info("Public assistant graph ready")
-        yield
+    # Times out overdue live handovers into callbacks every 15 seconds (single-process broker).
+    sweeper = asyncio.create_task(live_chat.run_sweeper())
+    try:
+        async with AsyncPostgresSaver.from_conn_string(settings.database_url) as checkpointer:
+            await checkpointer.setup()
+            app.state.agent_graph = build_public_assistant_graph(checkpointer)
+            logger.info("Public assistant graph ready")
+            yield
+    finally:
+        sweeper.cancel()
+        with suppress(asyncio.CancelledError):
+            await sweeper
 
 
 def create_app() -> FastAPI:
@@ -95,6 +110,9 @@ def create_app() -> FastAPI:
     app.include_router(chat_session.router, prefix="/api/v1")
     app.include_router(admin_consent.router, prefix="/api/v1")
     app.include_router(admin_faq_gaps.router, prefix="/api/v1")
+    app.include_router(admin_inbox.router, prefix="/api/v1")
+    app.include_router(admin_inbox.callbacks_router, prefix="/api/v1")
+    app.include_router(live_chat_routes.router, prefix="/api/v1")
     app.include_router(widget.router, prefix="/api/v1")
     app.include_router(user_auth.router, prefix="/api/v1")
     app.include_router(admin_clients.router, prefix="/api/v1")

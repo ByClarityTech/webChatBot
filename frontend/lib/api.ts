@@ -15,7 +15,7 @@ export type ChatResponse = {
   session_id?: string | null;
   /** True when an earlier conversation ended (30 minutes idle or closed) and this one started. */
   session_reset?: boolean;
-  answer_source?: "model" | "faq" | "fallback" | "safety" | "booking" | null;
+  answer_source?: "model" | "faq" | "fallback" | "safety" | "booking" | "live" | null;
   /** Contact options when the knowledge base could not answer. Labels are already localized. */
   fallback?: FallbackCard | null;
 };

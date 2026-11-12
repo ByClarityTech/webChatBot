@@ -108,4 +108,10 @@ def chat_fallback_database(monkeypatch):
     monkeypatch.setattr("app.api.routes.chat.record_gap", AsyncMock(return_value=1))
     monkeypatch.setattr("app.services.fallback.callback_available", AsyncMock(return_value=False))
     monkeypatch.setattr("app.services.fallback.claim_live_chat", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        "app.api.routes.chat.get_open_handover_for_session", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        "app.api.routes.chat_session.get_active_session_for", AsyncMock(return_value=None)
+    )
     yield

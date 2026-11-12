@@ -106,7 +106,10 @@ class Settings(BaseSettings):
     phone_hash_key: str = ""
     # Live handover to staff. Off until the Staff Inbox exists; the once-per-session rule is
     # enforced either way.
-    live_chat_enabled: bool = False
+    live_chat_enabled: bool = True
+    # AI draft replies for staff send the conversation to the model provider. Off until a BAA
+    # covering that provider is confirmed.
+    staff_ai_drafts_enabled: bool = False
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
