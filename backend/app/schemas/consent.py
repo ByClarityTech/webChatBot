@@ -44,7 +44,7 @@ class ShareConsentRequest(BaseModel):
     client: str = ClientSlug
     thread_id: UUID
     session_id: UUID
-    purpose: Literal["share_contact"] = "share_contact"
+    purpose: Literal["share_contact", "callback"] = "share_contact"
     text_version: int = Field(..., ge=1)
     full_name: str = Field(..., min_length=1, max_length=255)
     phone: str = Field(..., min_length=7, max_length=30)

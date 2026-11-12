@@ -75,12 +75,14 @@ class ClientRecord:
     calendar_mode: str = "none"
     # Host patterns allowed to call the public API and frame the widget (migration 0010).
     allowed_domains: list[str] = field(default_factory=list)
+    # E.164 practice number behind the Call and Text buttons (migration 0013), or None.
+    contact_phone: str | None = None
 
 
 _CLIENT_COLUMNS = """
     c.id, c.name, c.slug, c.status, c.created_at, c.updated_at,
     (SELECT COUNT(*) FROM users u WHERE u.client_id = c.id), c.calendar_mode,
-    c.allowed_domains
+    c.allowed_domains, c.contact_phone
 """
 
 
@@ -95,6 +97,7 @@ def _row_to_record(row: tuple) -> ClientRecord:
         user_count=int(row[6]),
         calendar_mode=row[7],
         allowed_domains=list(row[8] or []),
+        contact_phone=row[9],
     )
 
 
@@ -128,9 +131,7 @@ async def get_client(client_id: UUID) -> ClientRecord | None:
 async def get_client_by_slug(slug: str) -> ClientRecord | None:
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                f"SELECT {_CLIENT_COLUMNS} FROM clients c WHERE c.slug = %s", (slug,)
-            )
+            await cur.execute(f"SELECT {_CLIENT_COLUMNS} FROM clients c WHERE c.slug = %s", (slug,))
             row = await cur.fetchone()
     if row is None:
         return None
@@ -188,6 +189,18 @@ async def set_client_allowed_domains(client_id: UUID, patterns: list[str]) -> Cl
             await cur.execute(
                 "UPDATE clients SET allowed_domains = %s, updated_at = NOW() WHERE id = %s",
                 (Jsonb(cleaned), client_id),
+            )
+        await conn.commit()
+    return await get_client(client_id)
+
+
+async def set_client_contact_phone(client_id: UUID, phone: str | None) -> ClientRecord | None:
+    """Stores the practice number (E.164) or clears it with None."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE clients SET contact_phone = %s, updated_at = NOW() WHERE id = %s",
+                (phone, client_id),
             )
         await conn.commit()
     return await get_client(client_id)

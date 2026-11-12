@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 
+import type { FallbackCard as FallbackCardData } from "@/lib/api";
 import {
   ApiRequestError,
   ChatUnavailableError,
@@ -18,13 +19,19 @@ import {
 import { chatConfig, MAX_SUGGESTED_QUESTIONS } from "@/lib/chat-config";
 
 import { BookingForm } from "./booking-form";
+import { FallbackCard } from "./fallback-card";
 import { ShareDetailsForm, ShareValues } from "./share-details-form";
 
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  /** Contact options under an answer the knowledge base could not give. */
+  fallback?: FallbackCardData;
 };
+
+const LIVE_CHAT_NOTICE = "Live chat is not available yet. Please call or text the office.";
+const CALLBACK_SAVED_NOTICE = "Thank you. The office has your details for a callback.";
 
 type Phase = "loading" | "choice" | "share" | "chat" | "unavailable";
 
@@ -104,6 +111,9 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
   const [configChecked, setConfigChecked] = useState(false);
   // The approved consent wording. Null means no sharing is offered (fail closed).
   const [offer, setOffer] = useState<ConsentOffer | null>(null);
+  // The share form serves two purposes: sharing details, or asking for a callback.
+  const [shareKind, setShareKind] = useState<"share_contact" | "callback">("share_contact");
+  const [callbackOffer, setCallbackOffer] = useState<ConsentOffer | null>(null);
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const prevMessageCountRef = useRef(0);
@@ -267,12 +277,32 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
   async function chooseShare() {
     setShareError(null);
     if (await startConversation()) {
+      setShareKind("share_contact");
       setPhase("share");
     }
   }
 
+  /** The callback capture, inside the conversation that the answer came from. */
+  async function chooseCallback() {
+    if (!clientSlug || !threadId || !sessionId) {
+      setNotice("Start a conversation first, then ask for a callback.");
+      return;
+    }
+    setNotice(null);
+    const wording = await getConsentOffer(clientSlug, "callback").catch(() => null);
+    if (!wording) {
+      setNotice("Callbacks are not available right now. Please call or text the office.");
+      return;
+    }
+    setCallbackOffer(wording);
+    setShareKind("callback");
+    setShareError(null);
+    setPhase("share");
+  }
+
   async function handleShareSubmit(values: ShareValues) {
-    if (!offer || !clientSlug || !threadId || !sessionId) {
+    const activeOffer = shareKind === "callback" ? callbackOffer : offer;
+    if (!activeOffer || !clientSlug || !threadId || !sessionId) {
       return;
     }
     setShareSubmitting(true);
@@ -282,13 +312,17 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
         client: clientSlug,
         thread_id: threadId,
         session_id: sessionId,
-        text_version: offer.version,
+        purpose: shareKind,
+        text_version: activeOffer.version,
         full_name: values.full_name,
         phone: values.phone,
         is_current_patient: values.is_current_patient,
         consent_accepted: true,
       });
       setKnown(true);
+      if (shareKind === "callback") {
+        setNotice(CALLBACK_SAVED_NOTICE);
+      }
       setPhase("chat");
     } catch (submitError) {
       if (submitError instanceof ApiRequestError && submitError.status === 409) {
@@ -377,6 +411,7 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
           id: crypto.randomUUID(),
           role: "assistant",
           content: response.reply,
+          fallback: response.fallback ?? undefined,
         },
       ]);
       if (response.action === "open_booking_form") {
@@ -468,10 +503,11 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
         </div>
       )}
 
-      {phase === "share" && offer && (
+      {phase === "share" && (shareKind === "callback" ? callbackOffer : offer) && (
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           <ShareDetailsForm
-            consentText={offer.text}
+            title={shareKind === "callback" ? "Request a callback" : "Share my details"}
+            consentText={(shareKind === "callback" ? callbackOffer : offer)?.text ?? ""}
             submitting={shareSubmitting}
             error={shareError}
             onSubmit={handleShareSubmit}
@@ -516,7 +552,7 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
             {messages.map((message) => (
               <div
                 key={message.id}
-                className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                className={`flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}
               >
                 <div
                   className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed ${
@@ -527,6 +563,14 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
                 >
                   <p className="whitespace-pre-wrap break-words">{message.content}</p>
                 </div>
+                {message.fallback && (
+                  <FallbackCard
+                    card={message.fallback}
+                    onCallback={chooseCallback}
+                    onLiveChat={() => setNotice(LIVE_CHAT_NOTICE)}
+                    disabled={loading}
+                  />
+                )}
               </div>
             ))}
 

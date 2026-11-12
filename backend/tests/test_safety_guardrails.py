@@ -8,6 +8,7 @@ not covered here; see the manual eval list in the summary.
 import re
 import statistics
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -25,6 +26,8 @@ from app.agents.public.nodes.safety import SAFETY_DIAGNOSIS, SAFETY_URGENT, safe
 from app.agents.public.prompts.system import SYSTEM_PROMPT, build_context_block
 from app.api.routes import chat as chat_routes
 from app.core import safety
+from app.services.fallback import copy_for as _copy_for
+
 from app.core.safety import (
     DIAGNOSIS_EN,
     DIAGNOSIS_ES,
@@ -375,6 +378,13 @@ def test_logs_for_a_bypass_never_contain_the_message(caplog):
 # ---------------------------------------------------------------- graph: START -> safety
 
 
+def fallback_copy(language):
+    return _copy_for(language)
+
+
+_DOC = SimpleNamespace(text="We are open 9 to 5.", filename="hours.md", score=0.8, metadata={})
+
+
 def _fake_models(monkeypatch, *, intent=IntentLabel.faq, reply="Our hours are 9 to 5."):
     """Replaces the chat model in classify and generate. Returns the mocks for assertions."""
     model = MagicMock()
@@ -385,7 +395,9 @@ def _fake_models(monkeypatch, *, intent=IntentLabel.faq, reply="Our hours are 9 
 
     monkeypatch.setattr("app.agents.public.nodes.classify.get_chat_model", lambda: model)
     monkeypatch.setattr("app.agents.public.nodes.generate.get_chat_model", lambda: model)
-    monkeypatch.setattr("app.agents.public.nodes.retrieve.retrieve_chunks", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        "app.agents.public.nodes.retrieve.retrieve_chunks", lambda *_a, **_k: [_DOC]
+    )
     return model, structured
 
 
@@ -545,7 +557,9 @@ async def test_route_returns_the_safety_flag_for_an_urgent_turn(chat_app, open_c
 
 async def test_route_fallbacks_follow_the_visitor_language(chat_app, open_client):
     graph = MagicMock()
-    graph.ainvoke = async_returning({"messages": [], "retrieved_docs": [], "safety": None})
+    graph.ainvoke = async_returning(
+        {"messages": [], "retrieved_docs": [], "safety": None, "answer_declined": True}
+    )
     chat_app.state.agent_graph = graph
 
     async with _client(chat_app) as client:
@@ -554,12 +568,12 @@ async def test_route_fallbacks_follow_the_visitor_language(chat_app, open_client
             "/api/v1/chat", json={"message": "¿cuál es el horario?", "client": "clinic"}
         )
 
-    assert english.json()["reply"] == chat_routes.EMPTY_KB_MESSAGE
-    assert spanish.json()["reply"] == chat_routes.EMPTY_KB_MESSAGE_ES
+    assert english.json()["reply"] == fallback_copy("en")["intro"]
+    assert spanish.json()["reply"] == fallback_copy("es")["intro"]
     assert english.json()["safety"] is None
 
 
-async def test_unavailable_error_is_localized(chat_app, open_client):
+async def test_model_outage_degrades_in_the_visitors_language(chat_app, open_client):
     graph = MagicMock()
     graph.ainvoke = async_returning(None)
     graph.ainvoke.side_effect = RuntimeError("provider down")
@@ -570,5 +584,25 @@ async def test_unavailable_error_is_localized(chat_app, open_client):
             "/api/v1/chat", json={"message": "¿cuál es el horario?", "client": "clinic"}
         )
 
-    assert response.status_code == 500
+    assert response.status_code == 200
+    assert response.json()["reply"] == fallback_copy("es")["intro"]
+
+
+async def test_outage_with_a_broken_database_is_a_localized_503(chat_app, open_client, monkeypatch):
+    graph = MagicMock()
+    graph.ainvoke = async_returning(None)
+    graph.ainvoke.side_effect = RuntimeError("provider down")
+    chat_app.state.agent_graph = graph
+    monkeypatch.setattr(
+        "app.api.routes.chat.answer_from_faqs", AsyncMock(side_effect=ConnectionError("db"))
+    )
+
+    async with _client(chat_app) as client:
+        response = await client.post(
+            "/api/v1/chat", json={"message": "¿cuál es el horario?", "client": "clinic"}
+        )
+
+    assert response.status_code == 503
     assert response.json()["detail"] == chat_routes.CHAT_UNAVAILABLE_MESSAGE_ES
+
+

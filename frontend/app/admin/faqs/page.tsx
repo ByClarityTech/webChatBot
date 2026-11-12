@@ -1,3 +1,4 @@
+import { FaqGapsPanel } from "@/components/admin/faq-gaps-panel";
 import { FaqManager } from "@/components/admin/faq-manager";
 
 export default function AdminFaqsPage() {
@@ -9,6 +10,10 @@ export default function AdminFaqsPage() {
         or add your own; only approved FAQs reach the chatbot. Up to four approved FAQs can be
         default questions, shown when a visitor opens the chat.
       </p>
+
+      <div className="mt-8">
+        <FaqGapsPanel />
+      </div>
 
       <div className="mt-8">
         <FaqManager />

@@ -7,6 +7,7 @@ from app.agents.public.state import PublicAssistantState
 from app.core.config import get_settings
 from app.core.llm.provider import get_chat_model
 from app.core.safety import PRICE_EN, PRICE_ES, detect_language, has_unsupported_price, pick
+from app.services.fallback import copy_for, strip_marker
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +48,15 @@ def generate_node(state: PublicAssistantState) -> dict:
     response = model.invoke(messages)
     content = response.content if isinstance(response.content, str) else str(response.content)
 
+    # The model marks an answer it could not give. The marker never reaches the visitor.
+    content, declined = strip_marker(content)
+    if declined and not content:
+        content = copy_for(language)["intro"]
+
     # Layer 3 of the price guard: an amount the context does not contain is never shown.
     context_text = " ".join(str(doc.get("text", "")) for doc in docs)
     if has_unsupported_price(content, context_text):
         logger.info("Price guard replaced a reply that quoted an unsupported amount")
         content = pick(language, PRICE_EN, PRICE_ES)
 
-    return {"messages": [AIMessage(content=content)]}
+    return {"messages": [AIMessage(content=content)], "answer_declined": declined}

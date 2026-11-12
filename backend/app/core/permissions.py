@@ -19,6 +19,7 @@ class Area(str, Enum):
     clients = "clients"
     widget_domains = "widget_domains"
     consent_texts = "consent_texts"
+    practice_contact = "practice_contact"
 
 
 # Who may use each admin area (decision 7). Client scoping ("own client only") is a
@@ -38,6 +39,8 @@ AREA_ACCESS: dict[Area, frozenset[str]] = {
     Area.widget_domains: frozenset({SUPER_ADMIN, ADMIN}),
     # Approving consent wording is a legal sign-off: Super Admin only.
     Area.consent_texts: frozenset({SUPER_ADMIN}),
+    # The practice phone behind the Call and Text buttons: the practice's own admins may set it.
+    Area.practice_contact: frozenset({SUPER_ADMIN, ADMIN}),
 }
 
 

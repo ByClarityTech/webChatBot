@@ -6,7 +6,8 @@ from app.db.session import get_db_connection
 
 _SESSION_COLUMNS = """
     session_id, thread_id, client_id, type, status, end_reason, consent_given,
-    consent_text_version, is_test_session, started_at, last_activity_at, closed_at
+    consent_text_version, is_test_session, started_at, last_activity_at, closed_at,
+    handover_offered_at
 """
 
 
@@ -24,6 +25,7 @@ class ChatSession:
     started_at: datetime
     last_activity_at: datetime
     closed_at: datetime | None
+    handover_offered_at: datetime | None = None
 
 
 def _row(row: tuple) -> ChatSession:
@@ -176,3 +178,24 @@ async def count_sessions(client_id: UUID, *, include_test: bool) -> int:
             )
             row = await cur.fetchone()
     return int(row[0])
+
+
+async def claim_live_chat_offer(session_id: UUID, now: datetime) -> bool:
+    """Marks the conversation as offered live chat. True only for the first claim.
+
+    One UPDATE with a condition, so two responses racing on the same conversation cannot both
+    win. Closed conversations cannot be claimed.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE chat_sessions SET handover_offered_at = %s
+                WHERE session_id = %s AND handover_offered_at IS NULL AND status = 'active'
+                RETURNING session_id
+                """,
+                (now, session_id),
+            )
+            row = await cur.fetchone()
+        await conn.commit()
+    return row is not None

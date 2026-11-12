@@ -51,3 +51,11 @@ class BusinessHoursUpdateRequest(BaseModel):
         if self.end_time <= self.start_time:
             raise ValueError("end_time must be after start_time")
         return self
+
+
+class PracticeContactResponse(BaseModel):
+    phone: str | None = Field(None, description="E.164 US number, e.g. +13125550187")
+
+
+class PracticeContactUpdateRequest(BaseModel):
+    phone: str | None = Field(None, max_length=30)

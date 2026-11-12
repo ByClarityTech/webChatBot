@@ -108,6 +108,14 @@ async def change_faq(
     faq = await get_client_faq(client, faq_id)
     actions: list[str] = []
 
+    # A FAQ made from an unanswered question has no answer until someone writes one.
+    final_answer = answer if answer is not None else faq.answer
+    if status_ == STATUS_APPROVED and not (final_answer or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Write an answer before approving this FAQ",
+        )
+
     # Leaving the chatbot: remove the chunk before the row says draft.
     if status_ == STATUS_DRAFT and faq.status == STATUS_APPROVED:
         await _unindex(faq)

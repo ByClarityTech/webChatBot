@@ -23,6 +23,7 @@ from app.api.routes.admin import (
 )
 from app.api.routes.admin import (
     consent as admin_consent,
+    faq_gaps as admin_faq_gaps,
 )
 from app.api.routes.admin import (
     dashboard as admin_dashboard,
@@ -93,6 +94,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router, prefix="/api/v1")
     app.include_router(chat_session.router, prefix="/api/v1")
     app.include_router(admin_consent.router, prefix="/api/v1")
+    app.include_router(admin_faq_gaps.router, prefix="/api/v1")
     app.include_router(widget.router, prefix="/api/v1")
     app.include_router(user_auth.router, prefix="/api/v1")
     app.include_router(admin_clients.router, prefix="/api/v1")

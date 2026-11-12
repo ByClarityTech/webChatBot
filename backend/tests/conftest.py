@@ -94,3 +94,18 @@ def audit_rows(monkeypatch, request):
 
     monkeypatch.setattr("app.services.admin_audit.insert_admin_audit_log", record)
     yield rows
+
+
+@pytest.fixture(autouse=True)
+def chat_fallback_database(monkeypatch):
+    """The chat's fallback path reads FAQs, logs gaps and checks consent in the database.
+
+    Tests answer those in memory by default; tests that need them replace these stubs.
+    """
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("app.api.routes.chat.answer_from_faqs", AsyncMock(return_value=None))
+    monkeypatch.setattr("app.api.routes.chat.record_gap", AsyncMock(return_value=1))
+    monkeypatch.setattr("app.services.fallback.callback_available", AsyncMock(return_value=False))
+    monkeypatch.setattr("app.services.fallback.claim_live_chat", AsyncMock(return_value=False))
+    yield

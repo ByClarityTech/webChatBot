@@ -4,7 +4,7 @@ All routes take the client slug and check the request origin like the chat itsel
 one refuses a thread or session that does not belong to that client.
 """
 
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -71,11 +71,15 @@ async def session_status(
 
 
 @router.get("/consent-text", response_model=ConsentOfferResponse)
-async def consent_text(request: Request, client: ClientQuery) -> ConsentOfferResponse:
-    """The approved wording for sharing details, with the practice name filled in."""
+async def consent_text(
+    request: Request,
+    client: ClientQuery,
+    purpose: Annotated[Literal["share_contact", "callback"], Query()] = "share_contact",
+) -> ConsentOfferResponse:
+    """The approved wording for sharing details or asking for a callback, practice name filled in."""
     record = await get_active_client(client)
     verify_client_origin(request, record)
-    offer = await offered_wording(record.name)
+    offer = await offered_wording(record.name, purpose)
     if offer is None:
         # No approved wording: the widget offers anonymous chat only.
         raise HTTPException(
@@ -99,6 +103,7 @@ async def share_consent(body: ShareConsentRequest, request: Request) -> ShareCon
             full_name=body.full_name,
             phone=body.phone,
             is_current_patient=body.is_current_patient,
+            purpose=body.purpose,
         )
     except ConsentSessionEndedError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

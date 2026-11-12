@@ -173,43 +173,54 @@ async def test_a_thread_continues_only_on_the_client_that_started_it(app):
 
 
 @pytest.mark.asyncio
-async def test_missing_api_key_returns_a_friendly_503_and_logs_the_cause(app, caplog):
+async def test_missing_api_key_degrades_to_the_fallback_card_and_logs_only_the_type(app, caplog):
     app.state.agent_graph.ainvoke = AsyncMock(
         side_effect=ValueError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
     )
 
     response = await post_chat(app, client="example")
 
-    assert response.status_code == 503
-    assert response.json()["detail"] == CHAT_UNAVAILABLE_MESSAGE
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer_source"] == "fallback"
+    assert body["fallback"]["labels"]["call"]
     assert "OPENAI_API_KEY" not in response.text
     assert "LLM_PROVIDER" not in response.text
-    assert "OPENAI_API_KEY is required" in caplog.text
+    assert "ValueError" in caplog.text
+    assert "OPENAI_API_KEY is required" not in caplog.text, "the error message is not logged"
 
 
 @pytest.mark.asyncio
-async def test_unexpected_error_returns_a_friendly_500_without_internals(app, caplog):
+async def test_unexpected_error_degrades_without_internals_in_the_answer(app, caplog):
     app.state.agent_graph.ainvoke = AsyncMock(
         side_effect=RuntimeError("could not connect to postgresql://app:secret@db-host/chat")
     )
 
     response = await post_chat(app, client="example")
 
-    assert response.status_code == 500
-    assert response.json()["detail"] == CHAT_UNAVAILABLE_MESSAGE
+    assert response.status_code == 200
+    assert response.json()["answer_source"] == "fallback"
     assert "postgresql" not in response.text
     assert "secret" not in response.text
-    assert "could not connect" in caplog.text
+    assert "could not connect" not in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_empty_answer_with_no_sources_uses_patient_wording(app):
     app.state.agent_graph.ainvoke = AsyncMock(
-        return_value={"messages": [], "retrieved_docs": [], "intent": "faq", "booking_action": None}
+        return_value={
+            "messages": [],
+            "retrieved_docs": [],
+            "intent": "faq",
+            "booking_action": None,
+            "answer_declined": True,
+        }
     )
 
     response = await post_chat(app, client="example")
 
     assert response.status_code == 200
-    assert response.json()["reply"] == EMPTY_KB_MESSAGE
-    assert "ingest" not in EMPTY_KB_MESSAGE.lower()
+    body = response.json()
+    assert body["answer_source"] == "fallback"
+    assert body["reply"] == "I don't have that information yet. You can reach the office directly using the options below, or ask another question."
+    assert "ingest" not in body["reply"].lower()

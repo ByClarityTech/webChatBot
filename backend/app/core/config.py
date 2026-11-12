@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     # of the normalized phone. Storing a contact is refused until both are set.
     phone_encryption_key: str = ""
     phone_hash_key: str = ""
+    # Live handover to staff. Off until the Staff Inbox exists; the once-per-session rule is
+    # enforced either way.
+    live_chat_enabled: bool = False
 
     @field_validator("allowed_origins", mode="before")
     @classmethod

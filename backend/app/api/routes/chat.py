@@ -3,12 +3,17 @@ import logging
 from fastapi import APIRouter, HTTPException, Request, status
 from langchain_core.messages import AIMessage, HumanMessage
 
+from app.agents.public.nodes.safety import safety_node
 from app.api.deps.auth import optional_admin_user
 from app.core.origin_check import verify_client_origin
 from app.core.rate_limit import check_chat_rate_limit
 from app.core.safety import detect_language, pick
-from app.schemas.chat import ChatRequest, ChatResponse, SourceCitation
-from app.services.chat_sessions import resolve_for_message
+from app.db.models.client import ClientRecord
+from app.schemas.chat import ChatRequest, ChatResponse, FallbackCard, SourceCitation
+from app.services import fallback as fallback_service
+from app.services.chat_sessions import SessionHandle, resolve_for_message, utc_now
+from app.services.keyword_answer import answer_from_faqs
+from app.services.knowledge_gaps import record_gap
 from app.services.public_client import NOT_AVAILABLE_MESSAGE, get_active_client
 
 __all__ = [
@@ -47,6 +52,86 @@ CHAT_UNAVAILABLE_MESSAGE_ES = (
 )
 
 
+def _top_score(docs: list[dict]) -> float | None:
+    scores = [doc.get("score") for doc in docs if doc.get("score") is not None]
+    return float(max(scores)) if scores else None
+
+
+async def _fallback_card(
+    client: ClientRecord,
+    session: SessionHandle,
+    text: str,
+    language: str,
+    *,
+    reason: str,
+    top_score: float | None,
+) -> FallbackCard:
+    """Logs the gap (not for test chats), then builds the card with the allowed options."""
+    if not session.is_test_session:
+        await record_gap(client.id, text, reason=reason, top_score=top_score)
+    callback = await fallback_service.callback_available()
+    live_chat = await fallback_service.claim_live_chat(session.session_id, utc_now())
+    return FallbackCard(
+        **fallback_service.build_card(
+            language,
+            contact_phone=client.contact_phone,
+            callback=callback,
+            live_chat=live_chat,
+        )
+    )
+
+
+async def _degraded_reply(
+    client: ClientRecord, session: SessionHandle, text: str, language: str
+) -> ChatResponse:
+    """The model or retrieval is unavailable: safety still applies, then approved FAQs only."""
+    bypass = safety_node({"messages": [HumanMessage(content=text)]})
+    if bypass.get("safety"):
+        return _response(
+            session,
+            reply=bypass["messages"][0].content,
+            source="safety",
+            safety=bypass["safety"],
+        )
+
+    faq = await answer_from_faqs(client.id, text)
+    if faq is not None:
+        return _response(session, reply=faq.answer, source="faq")
+
+    card = await _fallback_card(
+        client, session, text, language, reason="keyword_miss", top_score=None
+    )
+    return _response(
+        session,
+        reply=fallback_service.copy_for(language)["intro"],
+        source="fallback",
+        fallback=card,
+    )
+
+
+def _response(
+    session: SessionHandle,
+    *,
+    reply: str,
+    source: str,
+    sources: list[SourceCitation] | None = None,
+    action: str | None = None,
+    safety: str | None = None,
+    fallback: FallbackCard | None = None,
+) -> ChatResponse:
+    return ChatResponse(
+        reply=reply,
+        thread_id=str(session.thread_id),
+        sources=sources or [],
+        action=action,
+        safety=safety,
+        session_id=str(session.session_id),
+        session_reset=session.reset,
+        answer_source=source,
+        fallback=fallback,
+    )
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
     check_chat_rate_limit(request)
@@ -59,12 +144,13 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
         request_body.thread_id, client.id, is_test_session=admin is not None
     )
     thread_id = str(session.thread_id)
-    language = detect_language(request_body.message)
+    text = request_body.message.strip()
+    language = detect_language(text)
 
     try:
         result = await graph.ainvoke(
             {
-                "messages": [HumanMessage(content=request_body.message.strip())],
+                "messages": [HumanMessage(content=text)],
                 "retrieved_docs": [],
                 "thread_id": thread_id,
                 "client_id": str(client.id),
@@ -73,30 +159,55 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
             },
             config={"configurable": {"thread_id": thread_id}},
         )
-    except ValueError as exc:
-        # Missing or invalid configuration, such as an unset LLM API key. The message names
-        # internal settings, so it stays in the log.
-        logger.exception("Chat unavailable: configuration error (client_id=%s): %s", client.id, exc)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=pick(language, CHAT_UNAVAILABLE_MESSAGE, CHAT_UNAVAILABLE_MESSAGE_ES),
-        ) from exc
     except Exception as exc:
-        logger.exception("Chat failed (client_id=%s)", client.id)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=pick(language, CHAT_UNAVAILABLE_MESSAGE, CHAT_UNAVAILABLE_MESSAGE_ES),
-        ) from exc
+        # Missing key, invalid key, or a provider outage: answer from approved FAQs instead of
+        # refusing the visitor. Only the exception type is logged, never its message.
+        logger.warning(
+            "Model or retrieval unavailable; using approved FAQs (client_id=%s, error=%s)",
+            client.id,
+            type(exc).__name__,
+        )
+        try:
+            return await _degraded_reply(client, session, text, language)
+        except Exception as degraded_exc:
+            logger.error(
+                "Degraded chat failed (client_id=%s, error=%s)",
+                client.id,
+                type(degraded_exc).__name__,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=pick(language, CHAT_UNAVAILABLE_MESSAGE, CHAT_UNAVAILABLE_MESSAGE_ES),
+            ) from degraded_exc
 
     reply = ""
     for message in reversed(result.get("messages", [])):
         if isinstance(message, AIMessage):
             reply = message.content if isinstance(message.content, str) else str(message.content)
             break
+    # The model's refusal marker never reaches the visitor, even if the generate node was skipped.
+    reply, marked = fallback_service.strip_marker(reply)
 
     retrieved_docs = result.get("retrieved_docs", [])
-    if not retrieved_docs and not reply:
-        reply = pick(language, EMPTY_KB_MESSAGE, EMPTY_KB_MESSAGE_ES)
+    safety = result.get("safety")
+    booking_action = result.get("booking_action")
+
+    if safety:
+        return _response(session, reply=reply, source="safety", safety=safety)
+    if booking_action:
+        return _response(session, reply=reply, source="booking", action=booking_action)
+
+    if result.get("answer_declined") or marked:
+        reason = "model_declined" if retrieved_docs else "no_match"
+        card = await _fallback_card(
+            client, session, text, language, reason=reason, top_score=_top_score(retrieved_docs)
+        )
+        return _response(
+            session,
+            reply=reply or fallback_service.copy_for(language)["intro"],
+            source="fallback",
+            fallback=card,
+        )
 
     sources = [
         SourceCitation(
@@ -106,13 +217,4 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
         )
         for doc in retrieved_docs
     ]
-
-    return ChatResponse(
-        reply=reply,
-        thread_id=thread_id,
-        sources=sources,
-        action=result.get("booking_action"),
-        safety=result.get("safety"),
-        session_id=str(session.session_id),
-        session_reset=session.reset,
-    )
+    return _response(session, reply=reply, source="model", sources=sources)

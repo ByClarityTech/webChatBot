@@ -15,6 +15,19 @@ export type ChatResponse = {
   session_id?: string | null;
   /** True when an earlier conversation ended (30 minutes idle or closed) and this one started. */
   session_reset?: boolean;
+  answer_source?: "model" | "faq" | "fallback" | "safety" | "booking" | null;
+  /** Contact options when the knowledge base could not answer. Labels are already localized. */
+  fallback?: FallbackCard | null;
+};
+
+export type FallbackCard = {
+  labels: { call: string; text: string; callback: string; live_chat: string };
+  /** tel: link, present only when the practice has a number. */
+  call: string | null;
+  /** sms: link, present only when the practice has a number. */
+  text: string | null;
+  callback: boolean;
+  live_chat: boolean;
 };
 
 /** The widget's client is unknown or suspended (the API answers 404). */
@@ -132,8 +145,11 @@ export async function getSessionStatus(client: string, threadId: string): Promis
 export type ConsentOffer = { purpose: string; version: number; text: string };
 
 /** The approved wording for sharing details, or null when none is approved (no sharing). */
-export async function getConsentOffer(client: string): Promise<ConsentOffer | null> {
-  const params = new URLSearchParams({ client });
+export async function getConsentOffer(
+  client: string,
+  purpose: "share_contact" | "callback" = "share_contact",
+): Promise<ConsentOffer | null> {
+  const params = new URLSearchParams({ client, purpose });
   const response = await fetch(`${API_URL}/api/v1/chat/consent-text?${params}`);
   if (response.status === 404) {
     return null;
@@ -151,6 +167,7 @@ export type ShareDetails = {
   client: string;
   thread_id: string;
   session_id: string;
+  purpose: "share_contact" | "callback";
   text_version: number;
   full_name: string;
   phone: string;

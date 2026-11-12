@@ -14,3 +14,6 @@ class PublicAssistantState(TypedDict):
     booking_action: str | None
     # "urgent" or "diagnosis" when the safety node answered; None otherwise. Set every turn.
     safety: str | None
+    # True when the model said the knowledge base does not answer the question, or when there
+    # was nothing to retrieve. Drives the fallback card.
+    answer_declined: bool | None

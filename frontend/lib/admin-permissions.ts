@@ -12,7 +12,8 @@ export type AdminArea =
   | "audit_log"
   | "users"
   | "clients"
-  | "widget_domains";
+  | "widget_domains"
+  | "practice_contact";
 
 const AREA_ACCESS: Record<AdminArea, readonly UserType[]> = {
   dashboard: ["super_admin", "admin", "support"],
@@ -24,6 +25,7 @@ const AREA_ACCESS: Record<AdminArea, readonly UserType[]> = {
   users: ["super_admin", "admin"],
   clients: ["super_admin"],
   widget_domains: ["super_admin", "admin"],
+  practice_contact: ["super_admin", "admin"],
 };
 
 export function canAccess(userType: UserType, area: AdminArea): boolean {

@@ -9,6 +9,8 @@ export type ShareValues = {
 };
 
 type ShareDetailsFormProps = {
+  /** Heading: "Share my details" or "Request a callback". */
+  title?: string;
   /** The approved wording, with the practice name already filled in. */
   consentText: string;
   submitting: boolean;
@@ -28,6 +30,7 @@ const inputClass =
   "w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-slate-400 focus:ring-2";
 
 export function ShareDetailsForm({
+  title = "Share my details",
   consentText,
   submitting,
   error,
@@ -53,7 +56,7 @@ export function ShareDetailsForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-      <p className="text-sm font-medium text-slate-900">Share my details</p>
+      <p className="text-sm font-medium text-slate-900">{title}</p>
 
       <div>
         <label htmlFor="share-name" className="mb-1 block text-xs font-medium text-slate-600">

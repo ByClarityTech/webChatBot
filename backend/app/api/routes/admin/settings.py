@@ -7,16 +7,19 @@ from app.api.deps.auth import require_access
 from app.booking.config import get_business_hours_config
 from app.core.permissions import Area
 from app.db.models.admin_settings import get_client_business_hours, save_client_business_hours
-from app.db.models.client import set_client_allowed_domains
+from app.db.models.client import set_client_allowed_domains, set_client_contact_phone
 from app.db.models.user import UserRecord
 from app.schemas.settings import (
     AllowedDomainsResponse,
     AllowedDomainsUpdateRequest,
     BusinessHoursResponse,
     BusinessHoursUpdateRequest,
+    PracticeContactResponse,
+    PracticeContactUpdateRequest,
 )
 from app.services.admin_audit import log_admin_action
 from app.services.client_scope import resolve_client_scope
+from app.services.practice_contact import clean_practice_phone
 
 router = APIRouter(prefix="/admin/settings", tags=["admin-settings"])
 
@@ -108,3 +111,36 @@ async def update_allowed_domains(
         client_id=client.id,
     )
     return AllowedDomainsResponse(domains=saved.allowed_domains)
+
+
+ContactActor = Annotated[UserRecord, Depends(require_access(Area.practice_contact))]
+
+
+@router.get("/contact", response_model=PracticeContactResponse)
+async def get_practice_contact(actor: ContactActor, client_id: ClientIdQuery = None):
+    client = await resolve_client_scope(actor, client_id)
+    return PracticeContactResponse(phone=client.contact_phone)
+
+
+@router.put("/contact", response_model=PracticeContactResponse)
+async def update_practice_contact(
+    body: PracticeContactUpdateRequest,
+    request: Request,
+    actor: ContactActor,
+    client_id: ClientIdQuery = None,
+):
+    """The number behind the Call and Text buttons in the chat. Blank clears it."""
+    client = await resolve_client_scope(actor, client_id)
+    try:
+        phone = clean_practice_phone(body.phone)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    updated = await set_client_contact_phone(client.id, phone)
+    await log_admin_action(
+        "settings.contact_update",
+        resource_type="settings",
+        resource_id="contact_phone",
+        request=request,
+        client_id=client.id,
+    )
+    return PracticeContactResponse(phone=updated.contact_phone if updated else phone)

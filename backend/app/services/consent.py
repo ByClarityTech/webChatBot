@@ -64,9 +64,11 @@ def sha256_of(rendered: str) -> str:
     return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
-async def offered_wording(practice_name: str) -> OfferedConsent | None:
-    """The approved share-details wording for this practice, or None (then: no sharing)."""
-    latest = await get_latest_approved_text(SHARE_CONTACT)
+async def offered_wording(
+    practice_name: str, purpose: str = SHARE_CONTACT
+) -> OfferedConsent | None:
+    """The latest approved wording for this purpose, with the practice filled in, or None."""
+    latest = await get_latest_approved_text(purpose)
     if latest is None:
         return None
     return OfferedConsent(latest.purpose, latest.version, render(latest, practice_name))
@@ -101,13 +103,14 @@ async def record_share_consent(
     full_name: str,
     phone: str,
     is_current_patient: bool,
+    purpose: str = SHARE_CONTACT,
 ) -> None:
     """Stores the consent record and the contact, and makes the session known.
 
     Raises ConsentWordingUnavailableError, InvalidContactError, or ContactStorageNotConfigured
     (from contact_privacy) before anything is written.
     """
-    wording = await get_consent_text(SHARE_CONTACT, version)
+    wording = await get_consent_text(purpose, version)
     if wording is None or not wording.approved:
         raise ConsentWordingUnavailableError(NO_APPROVED_WORDING_MESSAGE)
 
@@ -122,7 +125,7 @@ async def record_share_consent(
     rendered = render(wording, practice_name)
     await insert_consent_record(
         session_id=session.session_id,
-        purpose=SHARE_CONTACT,
+        purpose=purpose,
         version=version,
         text_snapshot=rendered,
         text_sha256=sha256_of(rendered),
