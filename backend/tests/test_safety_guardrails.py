@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from auth_helpers import make_client_record
+from auth_helpers import fake_session_resolver, make_client_record
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessage, HumanMessage
@@ -520,7 +520,7 @@ def open_client(monkeypatch):
 
     monkeypatch.setattr("app.api.routes.chat.get_active_client", get_active_client)
     monkeypatch.setattr("app.api.routes.chat.verify_client_origin", lambda request, client: None)
-    monkeypatch.setattr("app.api.routes.chat.claim_chat_thread", async_returning(record.id))
+    monkeypatch.setattr("app.api.routes.chat.resolve_for_message", fake_session_resolver())
     return record
 
 

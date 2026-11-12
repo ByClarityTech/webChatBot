@@ -1,15 +1,14 @@
 import logging
-import uuid
 
 from fastapi import APIRouter, HTTPException, Request, status
 from langchain_core.messages import AIMessage, HumanMessage
 
+from app.api.deps.auth import optional_admin_user
 from app.core.origin_check import verify_client_origin
 from app.core.rate_limit import check_chat_rate_limit
 from app.core.safety import detect_language, pick
-from app.db.models.chat_thread import claim_chat_thread
-from app.db.models.client import ClientRecord
 from app.schemas.chat import ChatRequest, ChatResponse, SourceCitation
+from app.services.chat_sessions import resolve_for_message
 from app.services.public_client import NOT_AVAILABLE_MESSAGE, get_active_client
 
 __all__ = [
@@ -48,22 +47,18 @@ CHAT_UNAVAILABLE_MESSAGE_ES = (
 )
 
 
-async def _thread_for_client(thread_id: uuid.UUID | None, client: ClientRecord) -> uuid.UUID:
-    """The visitor's thread, or a new one when there is none or it belongs to another client."""
-    if thread_id is not None and await claim_chat_thread(thread_id, client.id) == client.id:
-        return thread_id
-    new_thread_id = uuid.uuid4()
-    await claim_chat_thread(new_thread_id, client.id)
-    return new_thread_id
-
-
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
     check_chat_rate_limit(request)
     graph = request.app.state.agent_graph
     client = await get_active_client(request_body.client)
     verify_client_origin(request, client)
-    thread_id = str(await _thread_for_client(request_body.thread_id, client))
+    # Only an authenticated admin can mark a conversation as a test; a visitor's flag is ignored.
+    admin = await optional_admin_user(request) if request_body.test_session else None
+    session = await resolve_for_message(
+        request_body.thread_id, client.id, is_test_session=admin is not None
+    )
+    thread_id = str(session.thread_id)
     language = detect_language(request_body.message)
 
     try:
@@ -118,4 +113,6 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
         sources=sources,
         action=result.get("booking_action"),
         safety=result.get("safety"),
+        session_id=str(session.session_id),
+        session_reset=session.reset,
     )

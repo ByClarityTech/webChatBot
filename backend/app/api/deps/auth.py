@@ -53,3 +53,21 @@ def require_access(area: Area) -> Callable[..., Awaitable[UserRecord]]:
         return user
 
     return dependency
+
+
+async def optional_admin_user(request: Request) -> UserRecord | None:
+    """The signed-in admin, or None when the request carries no valid session.
+
+    For public routes that behave differently for staff (test sessions). Never raises for a
+    missing or bad session: the visitor simply gets the public behaviour.
+    """
+    token = request.cookies.get(get_settings().session_cookie_name)
+    if not token:
+        return None
+    try:
+        user = await resolve_token(token)
+    except TokenConfigError:
+        return None
+    if user is None or user.must_change_password:
+        return None
+    return user

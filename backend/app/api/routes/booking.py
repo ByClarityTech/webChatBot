@@ -29,6 +29,14 @@ from app.core.rate_limit import check_booking_rate_limit
 from app.db.models.chat_thread import get_chat_thread_client
 from app.integrations.google.calendar_client import GoogleCalendarError
 from app.schemas.users import SLUG_PATTERN
+from app.services.chat_sessions import active_session_for
+from app.services.consent import (
+    ConsentSessionEndedError,
+    ConsentWordingUnavailableError,
+    InvalidContactError,
+    record_share_consent,
+)
+from app.services.contact_privacy import ContactStorageNotConfigured
 from app.services.public_client import get_active_client
 
 router = APIRouter(prefix="/booking", tags=["booking"])
@@ -42,6 +50,12 @@ BOOKING_UNAVAILABLE_DETAIL = (
     "Online booking isn't available right now. Please contact us directly to book."
 )
 WRONG_THREAD_DETAIL = "This conversation belongs to a different assistant"
+THREAD_REQUIRED_DETAIL = "Start a conversation before booking."
+SESSION_ENDED_DETAIL = "This conversation has ended. Start a new one to book."
+CONSENT_REQUIRED_DETAIL = (
+    "Tick the box to agree to be contacted about this booking, and say whether you are a "
+    "current patient."
+)
 
 ClientQuery = Annotated[str, Query(min_length=2, max_length=100, pattern=SLUG_PATTERN)]
 
@@ -75,6 +89,35 @@ def _unavailable(exc: Exception) -> HTTPException:
     )
 
 
+async def _record_booking_consent(body, session, client) -> None:
+    if (
+        not body.consent_accepted
+        or body.consent_text_version is None
+        or body.is_current_patient is None
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=CONSENT_REQUIRED_DETAIL)
+    try:
+        await record_share_consent(
+            session=session,
+            practice_name=client.name,
+            version=body.consent_text_version,
+            full_name=body.name,
+            phone=body.phone,
+            is_current_patient=body.is_current_patient,
+        )
+    except ConsentSessionEndedError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ConsentWordingUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except InvalidContactError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ContactStorageNotConfigured as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Booking is not available on this server right now.",
+        ) from exc
+
+
 @router.get("/availability", response_model=AvailabilityResponse)
 async def get_availability(
     client: ClientQuery,
@@ -100,6 +143,15 @@ async def book_appointment(
     # refuse rather than book without it.
     if body.thread_id is not None and await get_chat_thread_client(body.thread_id) != client.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=WRONG_THREAD_DETAIL)
+
+    # Anonymous visitors book with consent ticked in the card; a known visitor needs none.
+    if body.thread_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=THREAD_REQUIRED_DETAIL)
+    session = await active_session_for(body.thread_id, client.id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=SESSION_ENDED_DETAIL)
+    if session.type != "known":
+        await _record_booking_consent(body, session, client)
 
     try:
         record = await create_booking(

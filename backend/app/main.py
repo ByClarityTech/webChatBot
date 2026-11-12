@@ -7,17 +7,36 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.agents.public.graph import build_public_assistant_graph
 from app.api.routes import auth as user_auth
-from app.api.routes import booking, chat, health, widget
+from app.api.routes import booking, chat, chat_session, health, widget
 from app.api.routes.admin import (
     audit_log,
-    bookings as admin_bookings,
-    calendar as admin_calendar,
-    clients as admin_clients,
-    dashboard as admin_dashboard,
-    documents as admin_documents,
-    faqs as admin_faqs,
     google_oauth,
+)
+from app.api.routes.admin import (
+    bookings as admin_bookings,
+)
+from app.api.routes.admin import (
+    calendar as admin_calendar,
+)
+from app.api.routes.admin import (
+    clients as admin_clients,
+)
+from app.api.routes.admin import (
+    consent as admin_consent,
+)
+from app.api.routes.admin import (
+    dashboard as admin_dashboard,
+)
+from app.api.routes.admin import (
+    documents as admin_documents,
+)
+from app.api.routes.admin import (
+    faqs as admin_faqs,
+)
+from app.api.routes.admin import (
     settings as admin_settings,
+)
+from app.api.routes.admin import (
     users as admin_users,
 )
 from app.core.config import get_settings
@@ -72,6 +91,8 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(chat.router, prefix="/api/v1")
+    app.include_router(chat_session.router, prefix="/api/v1")
+    app.include_router(admin_consent.router, prefix="/api/v1")
     app.include_router(widget.router, prefix="/api/v1")
     app.include_router(user_auth.router, prefix="/api/v1")
     app.include_router(admin_clients.router, prefix="/api/v1")

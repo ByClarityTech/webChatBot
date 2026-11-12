@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from auth_helpers import fake_session_resolver
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessage
@@ -30,11 +31,8 @@ def app(monkeypatch):
     async def get_client_by_slug(slug):
         return client if slug == "example" else None
 
-    async def claim_chat_thread(thread_id, client_id):
-        return client_id
-
     monkeypatch.setattr("app.services.public_client.get_client_by_slug", get_client_by_slug)
-    monkeypatch.setattr(chat_routes, "claim_chat_thread", claim_chat_thread)
+    monkeypatch.setattr(chat_routes, "resolve_for_message", fake_session_resolver())
     graph = MagicMock()
     graph.ainvoke = AsyncMock(
         return_value={"messages": [AIMessage(content="Hi")], "retrieved_docs": []}

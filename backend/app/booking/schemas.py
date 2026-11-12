@@ -52,6 +52,10 @@ class BookingCreateRequest(BaseModel):
     slot_start: datetime
     # The chat this booking came from; must belong to the same client.
     thread_id: UUID | None = None
+    # Needed unless the chat already holds consent. Ticked in the booking card, never assumed.
+    consent_accepted: bool = False
+    consent_text_version: int | None = Field(default=None, ge=1)
+    is_current_patient: bool | None = None
 
 
 class BookingResponse(BaseModel):

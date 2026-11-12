@@ -2,7 +2,7 @@
 
 The booking service, client lookup and thread lookup are replaced by fakes."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -15,17 +15,52 @@ from app.api.routes import booking
 from app.booking.availability import CalendarNotConnectedError, SlotNotAvailableError
 from app.booking.service import BookingConflictError
 from app.db.models.booking import BookingRecord
+from app.db.models.chat_session import ChatSession
 from app.integrations.google.calendar_client import GoogleCalendarError
 
 CLINIC = make_client_record("clinic")
 OTHER = make_client_record("other")
 BODY = {
+    "thread_id": str(uuid4()),
     "client": "clinic",
     "name": "Jane Doe",
     "phone": "+15551234567",
     "email": "jane@example.com",
     "slot_start": "2030-07-02T10:00:00+05:30",
 }
+
+
+def _known_session(client_id) -> ChatSession:
+    """An open conversation whose visitor already shared details: no consent is asked again."""
+    now = datetime(2030, 7, 1, 9, 0, tzinfo=UTC)
+    return ChatSession(
+        session_id=uuid4(),
+        thread_id=uuid4(),
+        client_id=client_id,
+        type="known",
+        status="active",
+        end_reason=None,
+        consent_given=True,
+        consent_text_version=1,
+        is_test_session=False,
+        started_at=now,
+        last_activity_at=now,
+        closed_at=None,
+    )
+
+
+@pytest.fixture(autouse=True)
+def known_chat(monkeypatch):
+    """Every thread is an open, known conversation of the clinic."""
+
+    async def get_chat_thread_client(thread_id):
+        return CLINIC.id
+
+    async def active_session_for(thread_id, client_id):
+        return _known_session(client_id)
+
+    monkeypatch.setattr("app.api.routes.booking.get_chat_thread_client", get_chat_thread_client)
+    monkeypatch.setattr("app.api.routes.booking.active_session_for", active_session_for)
 
 
 @pytest.fixture

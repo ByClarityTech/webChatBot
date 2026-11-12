@@ -59,3 +59,23 @@ def make_client_record(slug: str = "example", *, client_id=None, status: str = "
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         updated_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
+
+
+def fake_session_resolver():
+    """Stands in for services.chat_sessions.resolve_for_message, without the database.
+
+    Mirrors its thread rules: a thread continues only for the client that opened it; any other
+    thread, or none, starts a new conversation (reset is True when a thread was given).
+    """
+    from app.services.chat_sessions import SessionHandle
+
+    threads: dict = {}
+
+    async def resolve(thread_id, client_id, *, is_test_session):
+        if thread_id is not None and threads.get(thread_id) == client_id:
+            return SessionHandle(thread_id, uuid4(), False, is_test_session)
+        new_thread = uuid4()
+        threads[new_thread] = client_id
+        return SessionHandle(new_thread, uuid4(), thread_id is not None, is_test_session)
+
+    return resolve

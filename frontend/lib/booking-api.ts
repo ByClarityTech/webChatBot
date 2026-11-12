@@ -19,6 +19,10 @@ export type BookingCreatePayload = {
   email: string;
   slot_start: string;
   thread_id?: string | null;
+  /** Only when the chat has no consent yet: the box ticked in the booking card. */
+  consent_accepted?: boolean;
+  consent_text_version?: number | null;
+  is_current_patient?: boolean | null;
 };
 
 export type BookingResponse = {
@@ -72,6 +76,9 @@ export async function createBooking(payload: BookingCreatePayload): Promise<Book
       email: payload.email,
       slot_start: payload.slot_start,
       thread_id: payload.thread_id ?? null,
+      consent_accepted: payload.consent_accepted ?? false,
+      consent_text_version: payload.consent_text_version ?? null,
+      is_current_patient: payload.is_current_patient ?? null,
     }),
   });
 

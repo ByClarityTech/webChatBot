@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     invite_ttl_hours: int = 24
     password_reset_ttl_hours: int = 1
 
+    # Contact details shared in chat are encrypted with a Fernet key and indexed by an HMAC
+    # of the normalized phone. Storing a contact is refused until both are set.
+    phone_encryption_key: str = ""
+    phone_hash_key: str = ""
+
     @field_validator("allowed_origins", mode="before")
     @classmethod
     def strip_origins(cls, value: str) -> str:

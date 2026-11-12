@@ -10,6 +10,8 @@ from langchain_core.messages import AIMessage
 from app.api.routes.chat import CHAT_UNAVAILABLE_MESSAGE, EMPTY_KB_MESSAGE, router
 from app.db.models.client import ClientRecord
 
+from auth_helpers import fake_session_resolver
+
 
 @pytest.fixture(autouse=True)
 def clients(monkeypatch):
@@ -19,16 +21,11 @@ def clients(monkeypatch):
         "other": make_client("other"),
         "paused": make_client("paused", status="suspended"),
     }
-    threads: dict = {}
-
     async def get_client_by_slug(slug):
         return known.get(slug)
 
-    async def claim_chat_thread(thread_id, client_id):
-        return threads.setdefault(thread_id, client_id)
-
     monkeypatch.setattr("app.services.public_client.get_client_by_slug", get_client_by_slug)
-    monkeypatch.setattr("app.api.routes.chat.claim_chat_thread", claim_chat_thread)
+    monkeypatch.setattr("app.api.routes.chat.resolve_for_message", fake_session_resolver())
     return known
 
 

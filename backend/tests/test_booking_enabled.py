@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
+from auth_helpers import fake_session_resolver
 from auth_helpers import make_client_record
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -157,9 +158,7 @@ async def test_chat_booking_message_no_action_when_disabled(monkeypatch):
     monkeypatch.setattr(
         "app.services.public_client.get_client_by_slug", AsyncMock(return_value=client_record)
     )
-    monkeypatch.setattr(
-        "app.api.routes.chat.claim_chat_thread", AsyncMock(return_value=client_record.id)
-    )
+    monkeypatch.setattr("app.api.routes.chat.resolve_for_message", fake_session_resolver())
 
     test_app = FastAPI()
     mock_graph = MagicMock()
