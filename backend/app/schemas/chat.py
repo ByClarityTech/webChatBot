@@ -1,3 +1,4 @@
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -23,3 +24,5 @@ class ChatResponse(BaseModel):
     thread_id: str
     sources: list[SourceCitation]
     action: str | None = None
+    # Set when a deterministic safety reply was sent instead of a model answer.
+    safety: Literal["urgent", "diagnosis"] | None = None

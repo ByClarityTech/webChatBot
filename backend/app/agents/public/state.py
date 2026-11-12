@@ -12,3 +12,5 @@ class PublicAssistantState(TypedDict):
     client_id: str
     intent: str | None
     booking_action: str | None
+    # "urgent" or "diagnosis" when the safety node answered; None otherwise. Set every turn.
+    safety: str | None

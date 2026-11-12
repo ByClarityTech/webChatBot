@@ -7,7 +7,13 @@ from app.agents.public.nodes.booking_intent import booking_intent_node
 from app.agents.public.nodes.classify import classify_node
 from app.agents.public.nodes.generate import generate_node
 from app.agents.public.nodes.retrieve import retrieve_node
+from app.agents.public.nodes.safety import safety_node
 from app.agents.public.state import PublicAssistantState
+
+
+def _route_after_safety(state: PublicAssistantState) -> Literal["classify", "end"]:
+    # A bypass reply is already in the thread; the checkpointer saves it and nothing else runs.
+    return "end" if state.get("safety") else "classify"
 
 
 def _route_after_classify(
@@ -20,11 +26,13 @@ def _route_after_classify(
 
 def build_public_assistant_graph(checkpointer: AsyncPostgresSaver):
     graph = StateGraph(PublicAssistantState)
+    graph.add_node("safety", safety_node)
     graph.add_node("classify", classify_node)
     graph.add_node("retrieve", retrieve_node)
     graph.add_node("generate", generate_node)
     graph.add_node("booking_intent", booking_intent_node)
-    graph.add_edge(START, "classify")
+    graph.add_edge(START, "safety")
+    graph.add_conditional_edges("safety", _route_after_safety, {"classify": "classify", "end": END})
     graph.add_conditional_edges("classify", _route_after_classify)
     graph.add_edge("retrieve", "generate")
     graph.add_edge("generate", END)

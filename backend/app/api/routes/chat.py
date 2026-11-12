@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from app.core.origin_check import verify_client_origin
 from app.core.rate_limit import check_chat_rate_limit
+from app.core.safety import detect_language, pick
 from app.db.models.chat_thread import claim_chat_thread
 from app.db.models.client import ClientRecord
 from app.schemas.chat import ChatRequest, ChatResponse, SourceCitation
@@ -13,7 +14,9 @@ from app.services.public_client import NOT_AVAILABLE_MESSAGE, get_active_client
 
 __all__ = [
     "CHAT_UNAVAILABLE_MESSAGE",
+    "CHAT_UNAVAILABLE_MESSAGE_ES",
     "EMPTY_KB_MESSAGE",
+    "EMPTY_KB_MESSAGE_ES",
     "NOT_AVAILABLE_MESSAGE",
     "router",
 ]
@@ -34,6 +37,16 @@ CHAT_UNAVAILABLE_MESSAGE = (
     "Please try again in a moment, or contact the practice directly."
 )
 
+# Spanish versions of the two fallbacks above, sent when the visitor writes in Spanish.
+EMPTY_KB_MESSAGE_ES = (
+    "Lo siento, todavía no tengo información sobre eso. Puede hacer otra pregunta o "
+    "comunicarse directamente con nuestra oficina."
+)
+CHAT_UNAVAILABLE_MESSAGE_ES = (
+    "Lo siento, tengo problemas para procesar su solicitud en este momento. Por favor, "
+    "inténtelo de nuevo en un momento o comuníquese directamente con la oficina."
+)
+
 
 async def _thread_for_client(thread_id: uuid.UUID | None, client: ClientRecord) -> uuid.UUID:
     """The visitor's thread, or a new one when there is none or it belongs to another client."""
@@ -51,6 +64,7 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
     client = await get_active_client(request_body.client)
     verify_client_origin(request, client)
     thread_id = str(await _thread_for_client(request_body.thread_id, client))
+    language = detect_language(request_body.message)
 
     try:
         result = await graph.ainvoke(
@@ -70,13 +84,13 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
         logger.exception("Chat unavailable: configuration error (client_id=%s): %s", client.id, exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=CHAT_UNAVAILABLE_MESSAGE,
+            detail=pick(language, CHAT_UNAVAILABLE_MESSAGE, CHAT_UNAVAILABLE_MESSAGE_ES),
         ) from exc
     except Exception as exc:
         logger.exception("Chat failed (client_id=%s)", client.id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=CHAT_UNAVAILABLE_MESSAGE,
+            detail=pick(language, CHAT_UNAVAILABLE_MESSAGE, CHAT_UNAVAILABLE_MESSAGE_ES),
         ) from exc
 
     reply = ""
@@ -87,7 +101,7 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
 
     retrieved_docs = result.get("retrieved_docs", [])
     if not retrieved_docs and not reply:
-        reply = EMPTY_KB_MESSAGE
+        reply = pick(language, EMPTY_KB_MESSAGE, EMPTY_KB_MESSAGE_ES)
 
     sources = [
         SourceCitation(
@@ -103,4 +117,5 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
         thread_id=thread_id,
         sources=sources,
         action=result.get("booking_action"),
+        safety=result.get("safety"),
     )
