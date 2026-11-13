@@ -29,6 +29,12 @@ CALLBACK_DRAFT = (
     "is not a condition of receiving care."
 )
 
+
+def _sql_literal(text: str) -> str:
+    """A SQL string literal for text that may contain apostrophes ("don't" becomes 'don''t')."""
+    return "'" + text.replace("'", "''") + "'"
+
+
 UPGRADE = [
     """
     CREATE TABLE consent_texts (
@@ -91,8 +97,8 @@ UPGRADE = [
     "CREATE INDEX session_contacts_phone_hash ON session_contacts (phone_hash)",
     f"""
     INSERT INTO consent_texts (purpose, version, body, approved_at) VALUES
-        ('share_contact', 1, '{SHARE_DRAFT}', NULL),
-        ('callback', 1, '{CALLBACK_DRAFT}', NULL)
+        ('share_contact', 1, {_sql_literal(SHARE_DRAFT)}, NULL),
+        ('callback', 1, {_sql_literal(CALLBACK_DRAFT)}, NULL)
     """,
 ]
 

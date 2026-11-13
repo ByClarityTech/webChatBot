@@ -44,7 +44,7 @@ UPGRADE = [
     "last_seen_at DESC)",
     "ALTER TABLE chat_sessions ADD COLUMN handover_offered_at TIMESTAMPTZ",
     "ALTER TABLE clients ADD COLUMN contact_phone TEXT "
-    "CHECK (contact_phone IS NULL OR contact_phone ~ '^\+1[0-9]{10}$')",
+    r"CHECK (contact_phone IS NULL OR contact_phone ~ '^\+1[0-9]{10}$')",
     "ALTER TABLE faqs ALTER COLUMN answer DROP NOT NULL",
     "ALTER TABLE faqs DROP CONSTRAINT IF EXISTS faqs_answer_check",
     "ALTER TABLE faqs ADD CONSTRAINT faqs_answer_check "
