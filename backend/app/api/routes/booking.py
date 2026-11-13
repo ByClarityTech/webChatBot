@@ -37,13 +37,12 @@ from app.services.consent import (
     record_share_consent,
 )
 from app.services.contact_privacy import ContactStorageNotConfigured
-from app.services.public_client import get_active_client
+from app.services.public_client import get_active_client, get_live_client
 
 router = APIRouter(prefix="/booking", tags=["booking"])
 
 BOOKING_DISABLED_DETAIL = (
-    "Online booking is currently disabled. "
-    "Please use the scheduling link on this page."
+    "Online booking is currently disabled. Please use the scheduling link on this page."
 )
 # Visitors never see calendar or reconnect details; admins see those on the Calendar page.
 BOOKING_UNAVAILABLE_DETAIL = (
@@ -124,7 +123,7 @@ async def get_availability(
     date: date = Query(..., description="Date in YYYY-MM-DD (the client's timezone)"),
     _: Annotated[None, Depends(require_booking_enabled)] = None,
 ) -> AvailabilityResponse:
-    record = await get_active_client(client)
+    record = await get_live_client(client)
     try:
         return await get_availability_for_date(record.id, date)
     except (CalendarNotConnectedError, GoogleCalendarError) as exc:
@@ -138,7 +137,7 @@ async def book_appointment(
     _: Annotated[None, Depends(require_booking_enabled)] = None,
 ) -> BookingResponse:
     enforce_booking_rate_limit(request, body)
-    client = await get_active_client(body.client)
+    client = await get_live_client(body.client)
     # A thread from another client's widget (or one that does not exist) is a bug or tampering:
     # refuse rather than book without it.
     if body.thread_id is not None and await get_chat_thread_client(body.thread_id) != client.id:

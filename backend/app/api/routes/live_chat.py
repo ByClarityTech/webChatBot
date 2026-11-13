@@ -17,7 +17,7 @@ from app.schemas.users import SLUG_PATTERN
 from app.services import live_chat as live
 from app.services.broker import broker, sse_message, stream_frames, visitor_channel
 from app.services.chat_sessions import active_session_for
-from app.services.public_client import get_active_client
+from app.services.public_client import get_active_client, get_live_client
 
 router = APIRouter(prefix="/chat/live", tags=["chat-live"])
 
@@ -51,7 +51,7 @@ def _enabled() -> None:
 @router.post("/request", response_model=LiveRequestResponse)
 async def request_live_chat(body: LiveRequest, request: Request) -> LiveRequestResponse:
     _enabled()
-    client = await get_active_client(body.client)
+    client = await get_live_client(body.client)
     verify_client_origin(request, client)
     session = await active_session_for(body.thread_id, client.id)
     if session is None or session.session_id != body.session_id:

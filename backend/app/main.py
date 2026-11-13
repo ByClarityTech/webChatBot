@@ -50,6 +50,9 @@ from app.api.routes.admin import (
 from app.api.routes.admin import (
     users as admin_users,
 )
+from app.api.routes.admin import (
+    widget as admin_widget,
+)
 from app.core.config import get_settings
 from app.core.csrf import CSRFOriginMiddleware
 from app.db.init import init_db
@@ -67,6 +70,8 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     settings = get_settings()
     log_email_configuration()
+    if settings.app_env == "production" and "localhost" in settings.widget_public_url:
+        logger.error("WIDGET_PUBLIC_URL is still localhost. Install snippets will not work.")
     await init_db()
     # Times out overdue live handovers into callbacks every 15 seconds (single-process broker).
     sweeper = asyncio.create_task(live_chat.run_sweeper())
@@ -120,6 +125,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_inbox.router, prefix="/api/v1")
     app.include_router(admin_inbox.callbacks_router, prefix="/api/v1")
     app.include_router(admin_notification_recipients.router, prefix="/api/v1")
+    app.include_router(admin_widget.router, prefix="/api/v1")
     app.include_router(live_chat_routes.router, prefix="/api/v1")
     app.include_router(widget.router, prefix="/api/v1")
     app.include_router(user_auth.router, prefix="/api/v1")

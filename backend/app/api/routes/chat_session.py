@@ -35,7 +35,7 @@ from app.services.consent import (
     session_for_consent,
 )
 from app.services.contact_privacy import ContactStorageNotConfigured
-from app.services.public_client import get_active_client
+from app.services.public_client import get_active_client, get_live_client
 
 router = APIRouter(prefix="/chat", tags=["chat-session"])
 
@@ -48,7 +48,7 @@ CONTACTS_NOT_CONFIGURED = "Sharing details is not available on this server right
 @router.post("/session/start", response_model=SessionStartResponse)
 async def start_session(body: SessionStartRequest, request: Request) -> SessionStartResponse:
     """A new conversation, opened when the visitor makes the welcome choice."""
-    client = await get_active_client(body.client)
+    client = await get_live_client(body.client)
     verify_client_origin(request, client)
     admin = await optional_admin_user(request) if body.test_session else None
     handle = await start_new_session(client.id, is_test_session=admin is not None)

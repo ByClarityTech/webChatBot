@@ -102,9 +102,16 @@ export type WidgetConfig = {
   name: string;
   /** The client's default questions, in display order (may be empty). */
   default_questions: string[];
+  /** Branding. Null means the default: the practice name, the env greeting, the default color. */
+  bot_name: string | null;
+  greeting: string | null;
+  header_color: string;
+  header_text_color: string;
+  /** Absolute URL of the logo, or null when there is none. */
+  logo_url: string | null;
 };
 
-/** The widget's settings for this client; ChatUnavailableError if unknown or suspended. */
+/** The widget's settings for this client; ChatUnavailableError if unknown, suspended, or paused. */
 export async function getWidgetConfig(client: string): Promise<WidgetConfig> {
   const response = await fetch(
     `${API_URL}/api/v1/widget/config?client=${encodeURIComponent(client)}`,
@@ -115,7 +122,11 @@ export async function getWidgetConfig(client: string): Promise<WidgetConfig> {
   if (!response.ok) {
     throw new Error(`Widget config request failed (${response.status})`);
   }
-  return response.json();
+  const config = (await response.json()) as WidgetConfig;
+  return {
+    ...config,
+    logo_url: config.logo_url ? `${API_URL}${config.logo_url}` : null,
+  };
 }
 
 // ---------------------------------------------------------------- conversation sessions

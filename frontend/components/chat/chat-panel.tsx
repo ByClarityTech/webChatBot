@@ -34,7 +34,17 @@ type ChatMessage = {
   speaker?: "staff";
 };
 
-const LIVE_WAITING_MESSAGE = "Connecting you to a member of our team. Please wait a moment.";
+const DEFAULT_HEADER_COLOR = "#1D4ED8";
+
+type WidgetBranding = {
+  botName: string | null;
+  greeting: string | null;
+  headerColor: string;
+  headerTextColor: string;
+  logoUrl: string | null;
+};
+
+const LIVE_WAITING_MESSAGE ="Connecting you to a member of our team. Please wait a moment.";
 const LIVE_JOINED_MESSAGE = "A member of our team has joined the chat.";
 const LIVE_NOBODY_NOTICE =
   "No one from our team is online right now. Leave your details and the office will call you back.";
@@ -117,6 +127,8 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
   const [clientSlug, setClientSlug] = useState<string | null>(null);
   // The client's display name, from the widget config; shown in the header.
   const [clientName, setClientName] = useState<string | null>(null);
+  // The practice's look, from the widget config. Null until loaded: the defaults show meanwhile.
+  const [branding, setBranding] = useState<WidgetBranding | null>(null);
   // The practice's starred default questions (PRD FR-07), from the widget config.
   const [practiceQuestions, setPracticeQuestions] = useState<string[]>([]);
   // True once the widget config request has finished, either way.
@@ -185,6 +197,13 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
     getWidgetConfig(slug)
       .then((config) => {
         setClientName(config.name);
+        setBranding({
+          botName: config.bot_name,
+          greeting: config.greeting,
+          headerColor: config.header_color,
+          headerTextColor: config.header_text_color,
+          logoUrl: config.logo_url,
+        });
         setPracticeQuestions(cleanSuggestedQuestions(config.default_questions));
         setConfigChecked(true);
       })
@@ -564,6 +583,10 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
     await sendUserMessage(input);
   }
 
+  const headerColor = branding?.headerColor ?? DEFAULT_HEADER_COLOR;
+  const headerTextColor = branding?.headerTextColor ?? "#FFFFFF";
+  // The practice's greeting when it has saved one; otherwise the env default.
+  const greetingText = branding?.greeting || chatConfig.greeting;
   const isEmpty = messages.length === 0 && !loading;
   // The practice's own questions when it has starred any; otherwise the dental fallbacks.
   const suggestedQuestions =
@@ -586,17 +609,20 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
 
   return (
     <div className={frameClass}>
-      <div className="flex shrink-0 items-center gap-3 bg-[#1D4ED8] px-4 py-3">
+      <div
+        className="flex shrink-0 items-center gap-3 px-4 py-3"
+        style={{ backgroundColor: headerColor, color: headerTextColor }}
+      >
         <img
-          src="/bot-profile.png"
+          src={branding?.logoUrl ?? "/bot-profile.png"}
           alt=""
-          className="h-11 w-11 shrink-0 rounded-full border border-white bg-white object-cover"
+          className="h-11 w-11 shrink-0 rounded-full border border-white bg-white object-contain p-0.5"
         />
         <div className="flex min-w-0 flex-col">
-          <span className="truncate text-[15px] font-bold leading-tight text-white">
-            {clientName ?? ""}
+          <span className="truncate text-[15px] font-bold leading-tight">
+            {branding?.botName || clientName || ""}
           </span>
-          <span className="text-xs leading-tight text-blue-100">AI Assistant</span>
+          <span className="text-xs leading-tight">AI Assistant</span>
         </div>
       </div>
 
@@ -620,9 +646,9 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
 
       {phase === "choice" && (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 overflow-y-auto p-4">
-          {chatConfig.greeting && (
+          {greetingText && (
             <p className="text-center text-sm leading-relaxed text-slate-500">
-              {chatConfig.greeting}
+              {greetingText}
             </p>
           )}
           <div className="flex w-full max-w-xs flex-col gap-2">
@@ -669,9 +695,9 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
           >
             {isEmpty && (
               <div className="flex w-full min-w-0 flex-col items-center gap-4">
-                {chatConfig.greeting && (
+                {greetingText && (
                   <p className="text-center text-sm leading-relaxed text-slate-500">
-                    {chatConfig.greeting}
+                    {greetingText}
                   </p>
                 )}
                 {configChecked && suggestedQuestions.length > 0 && (

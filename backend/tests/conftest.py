@@ -114,4 +114,11 @@ def chat_fallback_database(monkeypatch):
     monkeypatch.setattr(
         "app.api.routes.chat_session.get_active_session_for", AsyncMock(return_value=None)
     )
+    # Widget status and branding are read from the database. Tests see a Live widget with the
+    # default look unless they replace these stubs.
+    monkeypatch.setattr("app.services.public_client.widget_status", AsyncMock(return_value="live"))
+    monkeypatch.setattr("app.api.routes.chat.widget_status", AsyncMock(return_value="live"))
+    monkeypatch.setattr(
+        "app.db.models.widget_settings.get_widget_settings", AsyncMock(return_value=None)
+    )
     yield

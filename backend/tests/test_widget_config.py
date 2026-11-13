@@ -60,6 +60,12 @@ async def test_returns_the_clients_default_questions_in_order(app):
         "name": "Clinic",
         "default_questions": ["Are you open on Sunday?", "Do you take insurance?"],
         "booking_available": True,
+        # Branding defaults when nothing is saved.
+        "bot_name": None,
+        "greeting": None,
+        "header_color": "#1D4ED8",
+        "header_text_color": "#FFFFFF",
+        "logo_url": None,
     }
 
 

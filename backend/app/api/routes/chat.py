@@ -10,10 +10,16 @@ from app.core.rate_limit import check_chat_rate_limit
 from app.core.safety import EMERGENCY_REPLY, check_urgent, detect_language, pick
 from app.db.models.client import ClientRecord
 from app.db.models.live_handover import get_open_handover_for_session
+from app.db.models.widget_settings import STATUS_PAUSED, widget_status
 from app.schemas.chat import ChatRequest, ChatResponse, FallbackCard, SourceCitation
 from app.services import fallback as fallback_service
 from app.services import live_chat as live
-from app.services.chat_sessions import SessionHandle, resolve_for_message, utc_now
+from app.services.chat_sessions import (
+    SessionHandle,
+    active_session_for,
+    resolve_for_message,
+    utc_now,
+)
 from app.services.keyword_answer import answer_from_faqs
 from app.services.knowledge_gaps import record_gap
 from app.services.public_client import NOT_AVAILABLE_MESSAGE, get_active_client
@@ -155,12 +161,23 @@ def _response(
     )
 
 
+async def _refuse_when_paused(client_id, thread_id) -> None:
+    """A paused widget takes no new messages. A conversation already with staff keeps going."""
+    if await widget_status(client_id) != STATUS_PAUSED:
+        return
+    session = await active_session_for(thread_id, client_id)
+    if session is not None and await get_open_handover_for_session(session.session_id):
+        return
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_AVAILABLE_MESSAGE)
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
     check_chat_rate_limit(request)
     graph = request.app.state.agent_graph
     client = await get_active_client(request_body.client)
     verify_client_origin(request, client)
+    await _refuse_when_paused(client.id, request_body.thread_id)
     # Only an authenticated admin can mark a conversation as a test; a visitor's flag is ignored.
     admin = await optional_admin_user(request) if request_body.test_session else None
     session = await resolve_for_message(

@@ -78,6 +78,7 @@ export const ADMIN_PAGES: readonly { href: string; label: string; area: AdminAre
   { href: "/admin/faqs", label: "FAQs", area: "documents" },
   { href: "/admin/calendar", label: "Calendar", area: "calendar" },
   { href: "/admin/settings", label: "Settings", area: "business_hours" },
+  { href: "/admin/widget", label: "Widget", area: "widget_domains" },
   { href: "/admin/bookings", label: "Bookings", area: "bookings" },
   { href: "/admin/inbox", label: "Inbox", area: "inbox" },
   { href: "/admin/users", label: "Users", area: "users" },

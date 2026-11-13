@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import EmailStr, Field, SecretStr, field_validator
+from pydantic import EmailStr, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     booking_rate_limit_per_hour: int = 10
 
     admin_frontend_url: str = "http://localhost:3000"
+    # Where the embed page (/embed) is served. The install snippet points here. Set it to the
+    # https origin of the widget host in production.
+    widget_public_url: str = "http://localhost:3000"
 
     # Set only when a trusted reverse proxy sits in front of the API and appends to
     # X-Forwarded-For. Off means the socket peer is the rate-limit key.
