@@ -121,4 +121,11 @@ def chat_fallback_database(monkeypatch):
     monkeypatch.setattr(
         "app.db.models.widget_settings.get_widget_settings", AsyncMock(return_value=None)
     )
+    # Related-question chips and slot suggestions read the database too. Tests see no starred
+    # questions and no suggestions unless they replace these stubs.
+    monkeypatch.setattr("app.api.routes.chat.list_default_questions", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        "app.api.routes.chat_session.get_session_contact", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr("app.api.routes.booking.suggest_slots", AsyncMock(return_value=[]))
     yield

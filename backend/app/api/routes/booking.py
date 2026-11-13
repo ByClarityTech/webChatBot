@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from datetime import date
 from typing import Annotated
 from uuid import UUID
@@ -12,11 +14,20 @@ from app.booking.availability import (
     get_availability_for_date,
 )
 from app.booking.config import get_business_hours_config
+from app.booking.errors import (
+    CONSENT_UNAVAILABLE,
+    CURRENT_PATIENT_REQUIRED,
+    SESSION_ENDED,
+    SLOT_TAKEN,
+    BookingHTTPError,
+    booking_error_response,
+)
 from app.booking.schemas import (
     AvailabilityResponse,
     BookingCreateRequest,
     BookingDetailResponse,
     BookingResponse,
+    SuggestionsResponse,
 )
 from app.booking.service import (
     BookingConflictError,
@@ -24,6 +35,7 @@ from app.booking.service import (
     create_booking,
     fetch_booking,
 )
+from app.booking.suggestions import TIMEOUT_SECONDS, suggest_slots
 from app.core.config import get_settings
 from app.core.rate_limit import check_booking_rate_limit
 from app.db.models.chat_thread import get_chat_thread_client
@@ -40,6 +52,9 @@ from app.services.contact_privacy import ContactStorageNotConfigured
 from app.services.public_client import get_active_client, get_live_client
 
 router = APIRouter(prefix="/booking", tags=["booking"])
+logger = logging.getLogger(__name__)
+
+CURRENT_PATIENT_DETAIL = "Tell us whether you are a current patient."
 
 BOOKING_DISABLED_DETAIL = (
     "Online booking is currently disabled. Please use the scheduling link on this page."
@@ -105,9 +120,9 @@ async def _record_booking_consent(body, session, client) -> None:
             is_current_patient=body.is_current_patient,
         )
     except ConsentSessionEndedError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise BookingHTTPError(status.HTTP_409_CONFLICT, str(exc), SESSION_ENDED) from exc
     except ConsentWordingUnavailableError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise BookingHTTPError(status.HTTP_409_CONFLICT, str(exc), CONSENT_UNAVAILABLE) from exc
     except InvalidContactError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ContactStorageNotConfigured as exc:
@@ -135,8 +150,20 @@ async def book_appointment(
     body: BookingCreateRequest,
     request: Request,
     _: Annotated[None, Depends(require_booking_enabled)] = None,
-) -> BookingResponse:
+):
+    try:
+        return await _book_appointment(body, request)
+    except BookingHTTPError as exc:
+        return booking_error_response(exc)
+
+
+async def _book_appointment(body: BookingCreateRequest, request: Request) -> BookingResponse:
     enforce_booking_rate_limit(request, body)
+    # Asked of every visitor, whether or not their contact is already on file (FR-31, FR-32).
+    if body.is_current_patient is None:
+        raise BookingHTTPError(
+            status.HTTP_400_BAD_REQUEST, CURRENT_PATIENT_DETAIL, CURRENT_PATIENT_REQUIRED
+        )
     client = await get_live_client(body.client)
     # A thread from another client's widget (or one that does not exist) is a bug or tampering:
     # refuse rather than book without it.
@@ -148,7 +175,7 @@ async def book_appointment(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=THREAD_REQUIRED_DETAIL)
     session = await active_session_for(body.thread_id, client.id)
     if session is None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=SESSION_ENDED_DETAIL)
+        raise BookingHTTPError(status.HTTP_409_CONFLICT, SESSION_ENDED_DETAIL, SESSION_ENDED)
     if session.type != "known":
         await _record_booking_consent(body, session, client)
 
@@ -159,12 +186,13 @@ async def book_appointment(
             phone=body.phone.strip(),
             email=str(body.email),
             slot_start=body.slot_start,
+            is_current_patient=body.is_current_patient,
             thread_id=body.thread_id,
         )
     except SlotInPastError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except (SlotNotAvailableError, BookingConflictError) as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise BookingHTTPError(status.HTTP_409_CONFLICT, str(exc), SLOT_TAKEN) from exc
     except (CalendarNotConnectedError, GoogleCalendarError) as exc:
         raise _unavailable(exc) from exc
 
@@ -183,6 +211,27 @@ async def book_appointment(
             + f" ({timezone})."
         )
     return response
+
+
+@router.get("/suggestions", response_model=SuggestionsResponse)
+async def get_suggestions(
+    client: ClientQuery,
+    _: Annotated[None, Depends(require_booking_enabled)] = None,
+) -> SuggestionsResponse:
+    """Up to three open slots in the next seven days. Empty on timeout or any calendar problem,
+    so the chat never waits on the calendar for them."""
+    record = await get_live_client(client)
+    try:
+        slots = await asyncio.wait_for(suggest_slots(record.id), timeout=TIMEOUT_SECONDS)
+    except TimeoutError:
+        return SuggestionsResponse(slots=[])
+    except Exception as exc:
+        logger.warning(
+            "Slot suggestions unavailable (client_id=%s, error=%s)", record.id, type(exc).__name__
+        )
+        return SuggestionsResponse(slots=[])
+    timezone = (await get_business_hours_config(record.id)).booking_timezone
+    return SuggestionsResponse(slots=slots, timezone=timezone)
 
 
 @router.get("/{booking_id}", response_model=BookingDetailResponse)

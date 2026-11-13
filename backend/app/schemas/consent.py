@@ -29,6 +29,8 @@ class SessionStatusResponse(BaseModel):
     active: bool
     session_id: str | None = None
     known: bool = False
+    # The answer to "Are you a current patient?" if the session already has one, else null.
+    current_patient: bool | None = None
 
 
 class SessionCloseRequest(BaseModel):

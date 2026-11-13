@@ -12,7 +12,16 @@ export type AdminBooking = {
   slot_start: string;
   slot_end: string;
   status: string;
+  /** Null for bookings made before the question was asked. */
+  is_current_patient: boolean | null;
 };
+
+function patientLabel(value: boolean | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "Not recorded";
+  }
+  return value ? "Yes" : "No";
+}
 
 type BookingsResponse = {
   bookings: AdminBooking[];
@@ -233,6 +242,7 @@ export function BookingsTable() {
             <tr>
               <th className="px-4 py-3 text-left font-medium text-slate-700">Name</th>
               <th className="px-4 py-3 text-left font-medium text-slate-700">Email</th>
+              <th className="px-4 py-3 text-left font-medium text-slate-700">Current patient</th>
               <th className="px-4 py-3 text-left font-medium text-slate-700">Slot start</th>
               <th className="px-4 py-3 text-left font-medium text-slate-700">Slot end</th>
               <th className="px-4 py-3 text-left font-medium text-slate-700">Status</th>
@@ -242,19 +252,19 @@ export function BookingsTable() {
           <tbody className="divide-y divide-slate-100">
             {needsClient ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
+                <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
                   Choose a client to see its bookings.
                 </td>
               </tr>
             ) : loading ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
+                <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
                   Loading bookings...
                 </td>
               </tr>
             ) : bookings.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
+                <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
                   No bookings found. Create one via the chat widget or booking API.
                 </td>
               </tr>
@@ -266,6 +276,9 @@ export function BookingsTable() {
                   <tr key={booking.id}>
                     <td className="px-4 py-3 font-medium text-slate-900">{booking.name}</td>
                     <td className="px-4 py-3 text-slate-600">{booking.email}</td>
+                    <td className="px-4 py-3 text-slate-600">
+                      {patientLabel(booking.is_current_patient)}
+                    </td>
                     <td className="px-4 py-3 text-slate-600">{formatSlot(booking.slot_start)}</td>
                     <td className="px-4 py-3 text-slate-600">{formatSlot(booking.slot_end)}</td>
                     <td className="px-4 py-3">

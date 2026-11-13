@@ -18,6 +18,8 @@ export type ChatResponse = {
   answer_source?: "model" | "faq" | "fallback" | "safety" | "booking" | "live" | null;
   /** Contact options when the knowledge base could not answer. Labels are already localized. */
   fallback?: FallbackCard | null;
+  /** Up to three starred questions the visitor has not asked. Tappable chips. */
+  related_questions?: string[] | null;
 };
 
 export type FallbackCard = {
@@ -138,7 +140,13 @@ export function startSession(client: string): Promise<SessionStart> {
   return postJson<SessionStart>("/api/v1/chat/session/start", { client });
 }
 
-export type SessionStatus = { active: boolean; session_id?: string | null; known: boolean };
+export type SessionStatus = {
+  active: boolean;
+  session_id?: string | null;
+  known: boolean;
+  /** The visitor's earlier answer to "Are you a current patient?", or null. */
+  current_patient?: boolean | null;
+};
 
 /** Whether the stored conversation is still open. Changes nothing on the server. */
 export async function getSessionStatus(client: string, threadId: string): Promise<SessionStatus> {

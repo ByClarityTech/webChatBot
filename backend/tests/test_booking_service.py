@@ -125,7 +125,12 @@ def fakes(monkeypatch):
 
 async def book(email="v@example.com"):
     return await service.create_booking(
-        client_id=CLIENT, name="Visitor", phone="0005550100", email=email, slot_start=SLOT
+        client_id=CLIENT,
+        name="Visitor",
+        phone="0005550100",
+        email=email,
+        slot_start=SLOT,
+        is_current_patient=False,
     )
 
 

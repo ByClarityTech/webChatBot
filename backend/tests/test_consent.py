@@ -435,6 +435,7 @@ async def test_start_status_and_close_routes(visitor_app, monkeypatch):
         "active": True,
         "session_id": str(session_id),
         "known": False,
+        "current_patient": None,
     }
 
     monkeypatch.setattr("app.api.routes.chat_session.close_session", AsyncMock(return_value=True))
@@ -497,6 +498,7 @@ BOOKING_BODY = {
     "phone": "3125550187",
     "email": "jane@example.com",
     "slot_start": "2030-07-02T10:00:00+05:30",
+    "is_current_patient": False,
 }
 
 

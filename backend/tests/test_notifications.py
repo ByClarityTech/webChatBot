@@ -503,6 +503,7 @@ async def test_booking_queues_its_email_after_confirmation(monkeypatch):
         phone=PHI_PHONE,
         email=PHI_EMAIL,
         slot_start=T0,
+        is_current_patient=True,
     )
 
     assert result is record
@@ -517,7 +518,12 @@ async def test_a_failed_booking_notification_does_not_undo_the_booking(monkeypat
     )
     with caplog.at_level(logging.ERROR):
         result = await booking_service.create_booking(
-            client_id=CLINIC_ID, name=PHI_NAME, phone=PHI_PHONE, email=PHI_EMAIL, slot_start=T0
+            client_id=CLINIC_ID,
+            name=PHI_NAME,
+            phone=PHI_PHONE,
+            email=PHI_EMAIL,
+            slot_start=T0,
+            is_current_patient=True,
         )
     assert result is record
     assert PHI_EMAIL not in caplog.text

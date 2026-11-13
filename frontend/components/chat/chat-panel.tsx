@@ -20,9 +20,24 @@ import { chatConfig, MAX_SUGGESTED_QUESTIONS } from "@/lib/chat-config";
 import { leaveLive, LiveMessage, LiveSnapshot, openLiveStream, requestLive } from "@/lib/live-chat-api";
 import { consumeSse } from "@/lib/sse";
 
-import { BookingForm } from "./booking-form";
+import { AvailabilitySlot, BookingError, createBooking, getSuggestions } from "@/lib/booking-api";
+
+import { BookingDraft, BookingForm } from "./booking-form";
 import { FallbackCard } from "./fallback-card";
 import { ShareDetailsForm, ShareValues } from "./share-details-form";
+import { todayDateString } from "./slot-picker";
+
+function emptyBookingDraft(): BookingDraft {
+  return {
+    date: todayDateString(),
+    name: "",
+    phone: "",
+    email: "",
+    isCurrentPatient: null,
+    consent: false,
+    selectedSlot: null,
+  };
+}
 
 type ChatMessage = {
   id: string;
@@ -32,6 +47,8 @@ type ChatMessage = {
   fallback?: FallbackCardData;
   /** A message a staff member typed in the live handover. */
   speaker?: "staff";
+  /** Tappable related-question chips under this answer. */
+  related?: string[];
 };
 
 const DEFAULT_HEADER_COLOR = "#1D4ED8";
@@ -129,6 +146,17 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
   const [clientName, setClientName] = useState<string | null>(null);
   // The practice's look, from the widget config. Null until loaded: the defaults show meanwhile.
   const [branding, setBranding] = useState<WidgetBranding | null>(null);
+  // The booking card. The draft lives here, so a failed or conflicting submit keeps every field.
+  const [bookingDraft, setBookingDraft] = useState<BookingDraft>(emptyBookingDraft);
+  const [bookingSubmitting, setBookingSubmitting] = useState(false);
+  const [bookingError, setBookingError] = useState<string | null>(null);
+  const [bookingSuggestions, setBookingSuggestions] = useState<{
+    slots: AvailabilitySlot[];
+    timezone: string;
+  }>({ slots: [], timezone: "UTC" });
+  const [slotRefreshKey, setSlotRefreshKey] = useState(0);
+  // The answer to "Are you a current patient?" from earlier in this conversation, if any.
+  const [knownCurrentPatient, setKnownCurrentPatient] = useState<boolean | null>(null);
   // The practice's starred default questions (PRD FR-07), from the widget config.
   const [practiceQuestions, setPracticeQuestions] = useState<string[]>([]);
   // True once the widget config request has finished, either way.
@@ -175,6 +203,7 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
             setThreadId(storedThread);
             setSessionId(status.session_id ?? storedSession);
             setKnown(status.known);
+            setKnownCurrentPatient(status.current_patient ?? null);
             setPhase("chat");
           } else {
             sessionStorage.removeItem(threadStorageKey(slug));
@@ -274,6 +303,9 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
     setNotice(null);
     setMessages([]);
     setShowBookingForm(false);
+    setBookingDraft(emptyBookingDraft());
+    setBookingError(null);
+    setKnownCurrentPatient(null);
     endLiveLocally();
     try {
       const started = await startSession(clientSlug);
@@ -294,6 +326,8 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
   /** Back to the welcome choice, with a reason shown above it. */
   function returnToChoice(reason: string) {
     forgetStoredConversation();
+    setBookingDraft(emptyBookingDraft());
+    setBookingError(null);
     endLiveLocally();
     setMessages([]);
     setThreadId(null);
@@ -379,16 +413,77 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
     setPhase("chat");
   }
 
-  function handleBookingSuccess(message: string) {
-    setShowBookingForm(false);
-    // A booking with consent also makes the conversation known from here on.
-    if (!known) {
-      setKnown(true);
+  /** The quick picks for the booking card. Never blocks the card: no picks is a normal state. */
+  async function refreshSuggestions() {
+    if (!clientSlug) {
+      return;
     }
-    setMessages((current) => [
-      ...current,
-      { id: crypto.randomUUID(), role: "assistant", content: message },
-    ]);
+    const result = await getSuggestions(clientSlug);
+    setBookingSuggestions({ slots: result.slots, timezone: result.timezone });
+  }
+
+  async function handleBookingSubmit(draft: BookingDraft) {
+    if (!clientSlug || !threadId || !sessionId || !draft.selectedSlot) {
+      return;
+    }
+    if (draft.isCurrentPatient === null) {
+      return;
+    }
+    const needsConsent = !known;
+    setBookingSubmitting(true);
+    setBookingError(null);
+    try {
+      const response = await createBooking({
+        client: clientSlug,
+        name: draft.name.trim(),
+        phone: draft.phone.trim(),
+        email: draft.email.trim(),
+        slot_start: draft.selectedSlot,
+        thread_id: threadId,
+        is_current_patient: draft.isCurrentPatient,
+        consent_accepted: needsConsent ? draft.consent : false,
+        consent_text_version: needsConsent && offer ? offer.version : null,
+      });
+      setShowBookingForm(false);
+      setBookingDraft(emptyBookingDraft());
+      // A booking with consent also makes the conversation known from here on.
+      if (!known) {
+        setKnown(true);
+      }
+      setKnownCurrentPatient(draft.isCurrentPatient);
+      setMessages((current) => [
+        ...current,
+        { id: crypto.randomUUID(), role: "assistant", content: response.message },
+      ]);
+    } catch (submitError) {
+      if (submitError instanceof BookingError && submitError.code === "SESSION_ENDED") {
+        returnToChoice(CLOSED_NOTICE);
+        return;
+      }
+      if (submitError instanceof BookingError && submitError.code === "SLOT_TAKEN") {
+        // Only the taken time is cleared. Name, phone, email and the other answers stay.
+        setBookingDraft((current) => ({ ...current, selectedSlot: null }));
+        setSlotRefreshKey((key) => key + 1);
+        setBookingError("That time was just taken. Pick another time below. Your details are kept.");
+        void refreshSuggestions();
+        return;
+      }
+      setBookingError(
+        submitError instanceof Error ? submitError.message : "Booking failed. Try again.",
+      );
+    } finally {
+      setBookingSubmitting(false);
+    }
+  }
+
+  /** A chip under an answer: asked as the visitor's next message, and the chips go away. */
+  function chooseRelated(messageId: string, question: string) {
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === messageId ? { ...message, related: [] } : message,
+      ),
+    );
+    void sendUserMessage(question);
   }
 
   // Drop the live connection on this side. The server ends the handover on its own terms.
@@ -561,11 +656,22 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
             role: "assistant",
             content: response.reply,
             fallback: response.fallback ?? undefined,
+            // Chips only after an answer from the model or an approved FAQ.
+            related:
+              response.answer_source === "model" || response.answer_source === "faq"
+                ? (response.related_questions ?? []).slice(0, 3)
+                : undefined,
           },
         ]);
       }
       if (response.action === "open_booking_form") {
         setShowBookingForm(true);
+        // Prefill the answer when the conversation already holds it; never overwrite a choice.
+        setBookingDraft((current) => ({
+          ...current,
+          isCurrentPatient: current.isCurrentPatient ?? knownCurrentPatient,
+        }));
+        void refreshSuggestions();
       }
     } catch (submitError) {
       if (submitError instanceof ChatUnavailableError) {
@@ -743,6 +849,21 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
                     disabled={loading}
                   />
                 )}
+                {message.related && message.related.length > 0 && (
+                  <div className="mt-2 flex max-w-[85%] flex-wrap gap-2" aria-label="Related questions">
+                    {message.related.map((question) => (
+                      <button
+                        key={question}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => chooseRelated(message.id, question)}
+                        className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-left text-xs text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {question}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
 
@@ -757,10 +878,16 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
             <div className="max-h-[min(45vh,360px)] shrink-0 overflow-y-auto border-t border-slate-200 bg-white px-3 py-3">
               <BookingForm
                 client={clientSlug}
-                threadId={threadId}
+                draft={bookingDraft}
+                onDraftChange={(patch) => setBookingDraft((current) => ({ ...current, ...patch }))}
                 needsConsent={!known}
                 consentOffer={offer}
-                onSuccess={handleBookingSuccess}
+                suggestions={bookingSuggestions.slots}
+                suggestionTimezone={bookingSuggestions.timezone}
+                refreshKey={slotRefreshKey}
+                submitting={bookingSubmitting}
+                error={bookingError}
+                onSubmit={handleBookingSubmit}
                 onCancel={() => setShowBookingForm(false)}
               />
             </div>

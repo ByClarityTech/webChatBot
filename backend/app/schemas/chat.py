@@ -46,3 +46,6 @@ class ChatResponse(BaseModel):
     # bypass, or the booking card.
     answer_source: Literal["model", "faq", "fallback", "safety", "booking", "live"] | None = None
     fallback: FallbackCard | None = None
+    # Up to three of the practice's starred questions the visitor has not asked yet. Only after
+    # an answer from the model or an approved FAQ; the widget shows them as tappable chips.
+    related_questions: list[str] = Field(default_factory=list, max_length=3)

@@ -44,6 +44,7 @@ def _to_detail(record) -> AdminBookingDetailResponse:
         status=record.status,
         created_at=record.created_at,
         google_event_id=record.google_event_id,
+        is_current_patient=record.is_current_patient,
     )
 
 
@@ -75,6 +76,7 @@ async def get_bookings(
                 slot_start=record.slot_start,
                 slot_end=record.slot_end,
                 status=record.status,
+                is_current_patient=record.is_current_patient,
             )
             for record in records
         ],

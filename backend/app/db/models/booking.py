@@ -18,6 +18,8 @@ class BookingRecord:
     status: str
     created_at: datetime
     client_id: UUID | None = None
+    # None for bookings made before migration 0017 ("Not recorded" in the admin views).
+    is_current_patient: bool | None = None
 
 
 def _row_to_record(row: tuple) -> BookingRecord:
@@ -33,6 +35,7 @@ def _row_to_record(row: tuple) -> BookingRecord:
         status=row[8],
         created_at=row[9],
         client_id=row[10] if len(row) > 10 else None,
+        is_current_patient=row[11] if len(row) > 11 else None,
     )
 
 
@@ -111,7 +114,7 @@ async def list_bookings(
     )
     query = f"""
         SELECT id, name, phone, email, slot_start, slot_end,
-               google_event_id, thread_id, status, created_at, client_id
+               google_event_id, thread_id, status, created_at, client_id, is_current_patient
         FROM bookings
         {where_sql}
         ORDER BY slot_start DESC
@@ -133,7 +136,8 @@ async def update_booking_status(booking_id: UUID, status: str) -> BookingRecord 
                 SET status = %s
                 WHERE id = %s
                 RETURNING id, name, phone, email, slot_start, slot_end,
-                          google_event_id, thread_id, status, created_at, client_id
+                          google_event_id, thread_id, status, created_at, client_id,
+                          is_current_patient
                 """,
                 (status, booking_id),
             )
@@ -152,10 +156,10 @@ STATUS_CONFIRMED = "confirmed"
 # behind by a crash stops blocking the slot after this long.
 PENDING_HOLD_MINUTES = 3
 
-# Column order must match _row_to_record (client_id last).
+# Column order must match _row_to_record (client_id, then is_current_patient, last).
 _CLIENT_BOOKING_COLUMNS = """
     id, name, phone, email, slot_start, slot_end,
-    google_event_id, thread_id, status, created_at, client_id
+    google_event_id, thread_id, status, created_at, client_id, is_current_patient
 """
 
 
@@ -168,6 +172,7 @@ async def claim_booking_slot(
     slot_start: datetime,
     slot_end: datetime,
     thread_id: UUID | None,
+    is_current_patient: bool,
 ) -> BookingRecord:
     """Holds the slot for this client as a pending booking, before anything is sent to Google.
 
@@ -188,12 +193,22 @@ async def claim_booking_slot(
                 await cur.execute(
                     f"""
                     INSERT INTO bookings (
-                        client_id, name, phone, email, slot_start, slot_end, thread_id, status
+                        client_id, name, phone, email, slot_start, slot_end, thread_id, status,
+                        is_current_patient
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s)
                     RETURNING {_CLIENT_BOOKING_COLUMNS}
                     """,
-                    (client_id, name, phone, email, slot_start, slot_end, thread_id),
+                    (
+                        client_id,
+                        name,
+                        phone,
+                        email,
+                        slot_start,
+                        slot_end,
+                        thread_id,
+                        is_current_patient,
+                    ),
                 )
                 row = await cur.fetchone()
     return _row_to_record(row)

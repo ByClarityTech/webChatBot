@@ -27,6 +27,7 @@ BODY = {
     "phone": "+15551234567",
     "email": "jane@example.com",
     "slot_start": "2030-07-02T10:00:00+05:30",
+    "is_current_patient": False,
 }
 
 

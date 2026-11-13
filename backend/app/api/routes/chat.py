@@ -9,6 +9,7 @@ from app.core.origin_check import verify_client_origin
 from app.core.rate_limit import check_chat_rate_limit
 from app.core.safety import EMERGENCY_REPLY, check_urgent, detect_language, pick
 from app.db.models.client import ClientRecord
+from app.db.models.faq import list_default_questions
 from app.db.models.live_handover import get_open_handover_for_session
 from app.db.models.widget_settings import STATUS_PAUSED, widget_status
 from app.schemas.chat import ChatRequest, ChatResponse, FallbackCard, SourceCitation
@@ -23,6 +24,7 @@ from app.services.chat_sessions import (
 from app.services.keyword_answer import answer_from_faqs
 from app.services.knowledge_gaps import record_gap
 from app.services.public_client import NOT_AVAILABLE_MESSAGE, get_active_client
+from app.services.related_questions import asked_texts, pick_related
 
 __all__ = [
     "CHAT_UNAVAILABLE_MESSAGE",
@@ -147,6 +149,7 @@ def _response(
     action: str | None = None,
     safety: str | None = None,
     fallback: FallbackCard | None = None,
+    related: list[str] | None = None,
 ) -> ChatResponse:
     return ChatResponse(
         reply=reply,
@@ -158,7 +161,28 @@ def _response(
         session_reset=session.reset,
         answer_source=source,
         fallback=fallback,
+        related_questions=related or [],
     )
+
+
+async def _related_chips(client: ClientRecord, asked: list[str], current: str) -> list[str]:
+    """Starred questions not yet asked. Empty when the list cannot be read: chips are optional."""
+    try:
+        starred = await list_default_questions(client.id)
+    except Exception as exc:
+        logger.warning("Related questions unavailable (error=%s)", type(exc).__name__)
+        return []
+    return pick_related(starred, asked, current)
+
+
+async def _asked_in_thread(graph, thread_id: str) -> list[str]:
+    """What the visitor has asked in this thread, from the saved conversation state."""
+    try:
+        state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+    except Exception as exc:
+        logger.warning("Conversation history unavailable (error=%s)", type(exc).__name__)
+        return []
+    return asked_texts(state.values.get("messages", []))
 
 
 async def _refuse_when_paused(client_id, thread_id) -> None:
@@ -215,7 +239,11 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
             type(exc).__name__,
         )
         try:
-            return await _degraded_reply(client, session, text, language)
+            degraded = await _degraded_reply(client, session, text, language)
+            if degraded.answer_source == "faq":
+                asked = await _asked_in_thread(graph, thread_id)
+                degraded.related_questions = await _related_chips(client, asked, text)
+            return degraded
         except Exception as degraded_exc:
             logger.error(
                 "Degraded chat failed (client_id=%s, error=%s)",
@@ -264,4 +292,5 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
         )
         for doc in retrieved_docs
     ]
-    return _response(session, reply=reply, source="model", sources=sources)
+    related = await _related_chips(client, asked_texts(result.get("messages", [])), text)
+    return _response(session, reply=reply, source="model", sources=sources, related=related)

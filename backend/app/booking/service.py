@@ -86,6 +86,7 @@ async def create_booking(
     phone: str,
     email: str,
     slot_start: datetime,
+    is_current_patient: bool,
     thread_id: UUID | None = None,
 ) -> BookingRecord:
     record = await _create_booking(
@@ -94,6 +95,7 @@ async def create_booking(
         phone=phone,
         email=email,
         slot_start=slot_start,
+        is_current_patient=is_current_patient,
         thread_id=thread_id,
     )
     # The booking is already confirmed. A failed notification must not undo it.
@@ -111,6 +113,7 @@ async def _create_booking(
     phone: str,
     email: str,
     slot_start: datetime,
+    is_current_patient: bool,
     thread_id: UUID | None = None,
 ) -> BookingRecord:
     normalized_start, slot_end, config = await validate_bookable_slot(client_id, slot_start)
@@ -128,6 +131,7 @@ async def _create_booking(
             slot_start=normalized_start,
             slot_end=slot_end,
             thread_id=thread_id,
+            is_current_patient=is_current_patient,
         )
     except (psycopg.errors.ExclusionViolation, psycopg.errors.UniqueViolation) as exc:
         raise BookingConflictError(SLOT_TAKEN) from exc

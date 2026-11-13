@@ -17,6 +17,14 @@ class AvailabilityResponse(BaseModel):
     slots: list[Slot]
 
 
+class SuggestionsResponse(BaseModel):
+    """Up to three of the next open slots. Empty when the calendar is slow or unavailable."""
+
+    slots: list[Slot] = Field(default_factory=list, max_length=3)
+    # The client's timezone. The widget shows the times in it, as the day picker does.
+    timezone: str = "UTC"
+
+
 class OAuthStartResponse(BaseModel):
     auth_url: str
 
@@ -81,6 +89,8 @@ class AdminBookingSummary(BaseModel):
     slot_start: datetime
     slot_end: datetime
     status: str
+    # Null for bookings made before the question was asked ("Not recorded").
+    is_current_patient: bool | None = None
 
 
 class AdminBookingListResponse(BaseModel):
@@ -100,6 +110,7 @@ class AdminBookingDetailResponse(BaseModel):
     status: str
     created_at: datetime
     google_event_id: str | None = None
+    is_current_patient: bool | None = None
 
 
 class AdminBookingCancelResponse(BaseModel):

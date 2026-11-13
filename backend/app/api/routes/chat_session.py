@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from app.api.deps.auth import optional_admin_user
 from app.core.origin_check import verify_client_origin
+from app.db.models.chat_session import get_session_contact
 from app.db.models.live_handover import get_open_handover_for_session as get_active_session_for
 from app.schemas.consent import (
     ConsentOfferResponse,
@@ -67,8 +68,12 @@ async def session_status(
     session = await active_session_for(thread_id, record.id)
     if session is None:
         return SessionStatusResponse(active=False)
+    contact = await get_session_contact(session.session_id)
     return SessionStatusResponse(
-        active=True, session_id=str(session.session_id), known=session.type == "known"
+        active=True,
+        session_id=str(session.session_id),
+        known=session.type == "known",
+        current_patient=contact[3] if contact else None,
     )
 
 

@@ -1,17 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { getAvailability } from "@/lib/booking-api";
+import { AvailabilitySlot, getAvailability } from "@/lib/booking-api";
 
 type SlotPickerProps = {
   /** Slug of the client whose open times to show. */
   client: string;
+  /** The day shown. Owned by the parent so it survives a conflict. */
+  date: string;
+  onDateChange: (date: string) => void;
   selectedSlot: string | null;
-  onSelect: (slotStart: string) => void;
+  onSelect: (slotStart: string | null) => void;
+  /** Bump to reload the day (after a conflict, the times may have changed). */
+  refreshKey: number;
 };
 
-function todayDateString(): string {
+export function todayDateString(): string {
   const now = new Date();
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, "0");
@@ -19,7 +24,7 @@ function todayDateString(): string {
   return `${year}-${month}-${day}`;
 }
 
-function formatSlotLabel(start: string, end: string, timezone: string): string {
+export function formatSlotLabel(start: string, end: string, timezone: string): string {
   const timeOptions: Intl.DateTimeFormatOptions = {
     hour: "numeric",
     minute: "2-digit",
@@ -31,12 +36,24 @@ function formatSlotLabel(start: string, end: string, timezone: string): string {
   return `${startLabel} – ${endLabel}`;
 }
 
-export function SlotPicker({ client, selectedSlot, onSelect }: SlotPickerProps) {
-  const [date, setDate] = useState(todayDateString);
+export function SlotPicker({
+  client,
+  date,
+  onDateChange,
+  selectedSlot,
+  onSelect,
+  refreshKey,
+}: SlotPickerProps) {
   const [timezone, setTimezone] = useState<string>("UTC");
-  const [slots, setSlots] = useState<Array<{ start: string; end: string }>>([]);
+  const [slots, setSlots] = useState<AvailabilitySlot[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // The effect reads these without re-running when they change.
+  const selectedRef = useRef(selectedSlot);
+  selectedRef.current = selectedSlot;
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
 
   useEffect(() => {
     let cancelled = false;
@@ -44,9 +61,6 @@ export function SlotPicker({ client, selectedSlot, onSelect }: SlotPickerProps) 
     async function loadSlots() {
       setLoading(true);
       setError(null);
-      setSlots([]);
-      onSelect("");
-
       try {
         const response = await getAvailability(client, date);
         if (cancelled) {
@@ -54,15 +68,18 @@ export function SlotPicker({ client, selectedSlot, onSelect }: SlotPickerProps) 
         }
         setTimezone(response.timezone);
         setSlots(response.slots);
-        if (response.slots.length === 0) {
-          onSelect("");
+        // Keep the visitor's choice only while it is still open.
+        const current = selectedRef.current;
+        if (current && !response.slots.some((slot) => slot.start === current)) {
+          onSelectRef.current(null);
         }
       } catch (loadError) {
         if (cancelled) {
           return;
         }
+        setSlots([]);
         setError(loadError instanceof Error ? loadError.message : "Failed to load slots");
-        onSelect("");
+        onSelectRef.current(null);
       } finally {
         if (!cancelled) {
           setLoading(false);
@@ -75,7 +92,7 @@ export function SlotPicker({ client, selectedSlot, onSelect }: SlotPickerProps) 
     return () => {
       cancelled = true;
     };
-  }, [date, onSelect]);
+  }, [client, date, refreshKey]);
 
   return (
     <div className="space-y-3">
@@ -88,7 +105,7 @@ export function SlotPicker({ client, selectedSlot, onSelect }: SlotPickerProps) 
           type="date"
           min={todayDateString()}
           value={date}
-          onChange={(event) => setDate(event.target.value)}
+          onChange={(event) => onDateChange(event.target.value)}
           className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none ring-slate-400 focus:ring-2"
         />
       </div>
@@ -122,6 +139,7 @@ export function SlotPicker({ client, selectedSlot, onSelect }: SlotPickerProps) 
                 <button
                   key={slot.start}
                   type="button"
+                  aria-pressed={isSelected}
                   onClick={() => onSelect(slot.start)}
                   className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
                     isSelected
