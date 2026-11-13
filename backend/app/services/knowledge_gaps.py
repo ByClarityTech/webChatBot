@@ -12,6 +12,7 @@ from uuid import UUID
 from fastapi import HTTPException, status
 
 from app.core.safety import normalize
+from app.db.models.analytics import insert_gap_event
 from app.db.models.faq import FaqRecord, existing_questions, insert_faq
 from app.db.models.knowledge_gap import (
     STATUS_OPEN,
@@ -46,16 +47,25 @@ def is_loggable(normalized: str) -> bool:
 
 
 async def record_gap(
-    client_id: UUID, text: str, *, reason: str, top_score: float | None
+    client_id: UUID,
+    text: str,
+    *,
+    reason: str,
+    top_score: float | None,
+    session_id: UUID | None = None,
 ) -> int | None:
-    """Logs one ask. Returns the new ask count, or None when the message is not a question."""
+    """Logs one ask. Returns the new ask count, or None when the message is not a question.
+
+    With session_id, the ask is also linked to that conversation (knowledge_gap_events), so
+    the conversation shows which questions went unanswered.
+    """
     if reason not in REASONS:
         raise ValueError(f"Unknown gap reason: {reason}")
     normalized = normalize_query(text)
     if not is_loggable(normalized):
         return None
     sample = " ".join((text or "").split())[:MAX_QUESTION_CHARS]
-    _, count = await upsert_gap(
+    gap_id, count = await upsert_gap(
         client_id=client_id,
         query_hash=query_hash(normalized),
         query_normalized=normalized,
@@ -63,6 +73,8 @@ async def record_gap(
         reason=reason,
         top_score=top_score,
     )
+    if session_id is not None:
+        await insert_gap_event(session_id, gap_id)
     logger.info("Knowledge gap recorded (reason=%s, ask_count=%d)", reason, count)
     return count
 

@@ -14,7 +14,9 @@ export type AdminArea =
   | "clients"
   | "widget_domains"
   | "practice_contact"
-  | "inbox";
+  | "inbox"
+  | "analytics"
+  | "conversations";
 
 const AREA_ACCESS: Record<AdminArea, readonly UserType[]> = {
   dashboard: ["super_admin", "admin", "support"],
@@ -28,6 +30,9 @@ const AREA_ACCESS: Record<AdminArea, readonly UserType[]> = {
   widget_domains: ["super_admin", "admin"],
   practice_contact: ["super_admin", "admin"],
   inbox: ["super_admin", "admin", "support"],
+  analytics: ["super_admin", "admin", "support"],
+  // Transcripts and phone lookups: Support is not included.
+  conversations: ["super_admin", "admin"],
 };
 
 export function canAccess(userType: UserType, area: AdminArea): boolean {
@@ -83,6 +88,8 @@ export const ADMIN_PAGES: readonly { href: string; label: string; area: AdminAre
   { href: "/admin/widget", label: "Widget", area: "widget_domains" },
   { href: "/admin/bookings", label: "Bookings", area: "bookings" },
   { href: "/admin/inbox", label: "Inbox", area: "inbox" },
+  { href: "/admin/analytics", label: "Analytics", area: "analytics" },
+  { href: "/admin/conversations", label: "Conversations", area: "conversations" },
   { href: "/admin/users", label: "Users", area: "users" },
   { href: "/admin/clients", label: "Clients", area: "clients" },
   { href: "/admin/audit-log", label: "Audit log", area: "audit_log" },

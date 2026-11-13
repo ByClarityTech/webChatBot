@@ -82,7 +82,13 @@ async def _fallback_card(
 ) -> FallbackCard:
     """Logs the gap (not for test chats), then builds the card with the allowed options."""
     if not session.is_test_session:
-        await record_gap(client.id, text, reason=reason, top_score=top_score)
+        await record_gap(
+            client.id,
+            text,
+            reason=reason,
+            top_score=top_score,
+            session_id=session.session_id,
+        )
     callback = await fallback_service.callback_available()
     live_chat = await fallback_service.claim_live_chat(session.session_id, utc_now())
     return FallbackCard(

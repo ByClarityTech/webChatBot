@@ -48,3 +48,24 @@ async def log_admin_action(
         )
     except Exception:
         logger.exception("Failed to write admin audit log for action=%s", action)
+
+
+async def require_admin_audit(
+    action: str,
+    *,
+    request=None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+    client_id: UUID | None = None,
+) -> None:
+    """Writes the audit row or raises. Use before returning sensitive data: a failed audit must
+    stop the response, not be logged and forgotten (log_admin_action swallows its errors)."""
+    actor = current_user_from_request(request)
+    await insert_admin_audit_log(
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        client_ip=client_ip_from_request(request),
+        user_id=actor.id if actor is not None else None,
+        client_id=client_id,
+    )

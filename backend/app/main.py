@@ -48,6 +48,12 @@ from app.api.routes.admin import (
     settings as admin_settings,
 )
 from app.api.routes.admin import (
+    analytics as admin_analytics,
+)
+from app.api.routes.admin import (
+    conversations as admin_conversations,
+)
+from app.api.routes.admin import (
     sources as admin_sources,
 )
 from app.api.routes.admin import (
@@ -60,6 +66,7 @@ from app.core.config import get_settings
 from app.core.csrf import CSRFOriginMiddleware
 from app.db.init import init_db
 from app.services import live_chat
+from app.services.analytics.labeler import run_labeler
 from app.services.email import log_email_configuration
 from app.services.notifications import run_dispatcher
 from app.services.website_crawler.scheduler import run_scheduler
@@ -83,14 +90,19 @@ async def lifespan(app: FastAPI):
     notifier = asyncio.create_task(run_dispatcher())
     # Monthly re-crawl of client websites. Only one instance runs it (advisory lock).
     crawl_scheduler = asyncio.create_task(run_scheduler())
+    labeler = None
     try:
         async with AsyncPostgresSaver.from_conn_string(settings.database_url) as checkpointer:
             await checkpointer.setup()
             app.state.agent_graph = build_public_assistant_graph(checkpointer)
             logger.info("Public assistant graph ready")
+            # Labels ended conversations for the analytics reports (reads saved state).
+            labeler = asyncio.create_task(run_labeler(app.state.agent_graph))
             yield
     finally:
-        for task in (sweeper, notifier, crawl_scheduler):
+        for task in (sweeper, notifier, crawl_scheduler, labeler):
+            if task is None:
+                continue
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
@@ -143,6 +155,8 @@ def create_app() -> FastAPI:
     app.include_router(admin_calendar.router, prefix="/api/v1")
     app.include_router(admin_settings.router, prefix="/api/v1")
     app.include_router(admin_sources.router, prefix="/api/v1")
+    app.include_router(admin_analytics.router, prefix="/api/v1")
+    app.include_router(admin_conversations.router, prefix="/api/v1")
     app.include_router(admin_bookings.router, prefix="/api/v1")
     app.include_router(admin_dashboard.router, prefix="/api/v1")
     app.include_router(audit_log.router, prefix="/api/v1")

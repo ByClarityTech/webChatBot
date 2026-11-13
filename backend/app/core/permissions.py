@@ -21,6 +21,8 @@ class Area(str, Enum):
     consent_texts = "consent_texts"
     practice_contact = "practice_contact"
     inbox = "inbox"
+    analytics = "analytics"
+    conversations = "conversations"
 
 
 # Who may use each admin area (decision 7). Client scoping ("own client only") is a
@@ -45,6 +47,10 @@ AREA_ACCESS: dict[Area, frozenset[str]] = {
     # The staff inbox: live chats and callbacks. Support answers chats; FAQ drafts stay with
     # Admins (checked where they are made).
     Area.inbox: frozenset({SUPER_ADMIN, ADMIN, SUPPORT}),
+    # Metrics, outcome labels and the zero-PHI export: everyone on the admin team.
+    Area.analytics: frozenset({SUPER_ADMIN, ADMIN, SUPPORT}),
+    # Transcripts and phone lookups: patient conversations. Support is not included.
+    Area.conversations: frozenset({SUPER_ADMIN, ADMIN}),
 }
 
 
