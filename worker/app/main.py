@@ -1,8 +1,21 @@
+import hmac
 import logging
 from pathlib import Path
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field
 
 from app.config import WorkerSettings, get_settings
@@ -22,8 +35,26 @@ from app.public_pipeline import (
 logger = logging.getLogger(__name__)
 
 # Internal service: only the backend calls it, and it trusts the client_id it is given.
-# Never expose this port publicly.
+# It is published on the Docker network only (no host port). Every endpoint except /health
+# also needs the shared X-Internal-Token header.
 app = FastAPI(title="Public Docs Chatbot Worker", version="0.2.0")
+
+
+def require_internal_token(
+    x_internal_token: Annotated[str | None, Header()] = None,
+) -> None:
+    """401 when the header is missing; 403 when it is wrong or no secret is configured."""
+    if not x_internal_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing internal token")
+    expected = get_settings().internal_worker_secret
+    if not expected or not hmac.compare_digest(
+        x_internal_token.encode("utf-8"), expected.encode("utf-8")
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid internal token")
+
+
+# Every route below except /health is registered on this router, which requires the token.
+api = APIRouter(dependencies=[Depends(require_internal_token)])
 
 # Same list as backend/app/services/document_worker.py; the suffix becomes part of a path.
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".html", ".htm", ".md", ".txt"}
@@ -95,7 +126,7 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/ingest")
+@api.post("/ingest")
 async def ingest(
     client_id: UUID = Form(...),
     document_id: UUID = Form(...),
@@ -142,7 +173,7 @@ async def ingest(
     }
 
 
-@app.delete("/documents/{document_id}")
+@api.delete("/documents/{document_id}")
 async def delete_document(document_id: UUID, client_id: UUID = Query(...)) -> dict[str, str]:
     settings = get_settings()
     delete_document_chunks(client_id, document_id, settings)
@@ -150,7 +181,7 @@ async def delete_document(document_id: UUID, client_id: UUID = Query(...)) -> di
     return {"status": "deleted", "document_id": str(document_id)}
 
 
-@app.post("/documents/{document_id}/reindex")
+@api.post("/documents/{document_id}/reindex")
 async def reindex_document(document_id: UUID, body: ReindexRequest) -> dict[str, int | str]:
     settings = get_settings()
     client_id = body.client_id
@@ -185,7 +216,7 @@ async def reindex_document(document_id: UUID, body: ReindexRequest) -> dict[str,
     }
 
 
-@app.get("/documents/{document_id}/text")
+@api.get("/documents/{document_id}/text")
 async def document_text(document_id: UUID, client_id: UUID = Query(...)) -> dict[str, str]:
     """The document's Markdown (from the Docling cache, else converted again), for FAQ
     generation. 404 when this client has no such document."""
@@ -214,7 +245,7 @@ async def document_text(document_id: UUID, client_id: UUID = Query(...)) -> dict
 # An approved page version is indexed beside the old one, which is removed after the new one is in.
 
 
-@app.put("/pages/{page_id}")
+@api.put("/pages/{page_id}")
 async def index_page(page_id: UUID, body: PageIndexRequest) -> dict[str, int | str]:
     settings = get_settings()
     try:
@@ -240,7 +271,7 @@ async def index_page(page_id: UUID, body: PageIndexRequest) -> dict[str, int | s
     return {"status": "indexed", "chunks_indexed": chunks_indexed, "page_id": str(page_id)}
 
 
-@app.delete("/pages/{page_id}")
+@api.delete("/pages/{page_id}")
 async def delete_page(page_id: UUID, client_id: UUID = Query(...)) -> dict[str, str]:
     settings = get_settings()
     delete_document_chunks(client_id, page_id, settings)
@@ -251,7 +282,7 @@ async def delete_page(page_id: UUID, client_id: UUID = Query(...)) -> dict[str, 
 # An approved FAQ is one chunk whose source_id is the FAQ's id. Indexing again replaces it.
 
 
-@app.put("/faqs/{faq_id}")
+@api.put("/faqs/{faq_id}")
 async def index_faq(faq_id: UUID, body: FaqIndexRequest) -> dict[str, int | str]:
     settings = get_settings()
     document = build_faq_document(body.question, body.answer, body.client_id, faq_id, settings)
@@ -269,8 +300,11 @@ async def index_faq(faq_id: UUID, body: FaqIndexRequest) -> dict[str, int | str]
     return {"status": "indexed", "chunks_indexed": chunks_indexed, "faq_id": str(faq_id)}
 
 
-@app.delete("/faqs/{faq_id}")
+@api.delete("/faqs/{faq_id}")
 async def delete_faq(faq_id: UUID, client_id: UUID = Query(...)) -> dict[str, str]:
     settings = get_settings()
     delete_document_chunks(client_id, faq_id, settings)
     return {"status": "deleted", "faq_id": str(faq_id)}
+
+
+app.include_router(api)

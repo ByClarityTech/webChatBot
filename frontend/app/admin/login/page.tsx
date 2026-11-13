@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { adminLogin, ApiError, getCurrentUser } from "@/lib/admin-api";
@@ -30,8 +31,11 @@ export default function AdminLoginPage() {
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("expired")) {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("expired")) {
       setNotice("Your session ended. Please sign in again.");
+    } else if (params.get("notice") === "password-set") {
+      setNotice("Your password is saved. Sign in with it now.");
     }
     // Already signed in: go straight to the dashboard.
     getCurrentUser()
@@ -96,9 +100,14 @@ export default function AdminLoginPage() {
           </div>
 
           <div>
-            <label htmlFor="password" className="mb-1.5 block text-sm font-medium text-slate-700">
-              Password
-            </label>
+            <div className="mb-1.5 flex items-baseline justify-between">
+              <label htmlFor="password" className="block text-sm font-medium text-slate-700">
+                Password
+              </label>
+              <Link href="/auth/forgot-password" className="text-xs text-slate-600 underline">
+                Forgot password?
+              </Link>
+            </div>
             <input
               id="password"
               type="password"

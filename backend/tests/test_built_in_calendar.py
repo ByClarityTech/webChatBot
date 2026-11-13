@@ -244,7 +244,7 @@ async def test_google_needs_a_healthy_connection_first(app, token_status):
 
 
 async def test_google_can_be_chosen_once_connected(app):
-    with signed_in(app, UserType.support) as user:
+    with signed_in(app, UserType.admin) as user:
         app.state.tokens[user.client_id] = token()
         response = await put_mode(app, "google")
     assert response.status_code == 200

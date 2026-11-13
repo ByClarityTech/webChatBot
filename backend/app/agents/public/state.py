@@ -10,6 +10,8 @@ class PublicAssistantState(TypedDict):
     thread_id: str
     # The client whose widget the visitor is on; retrieval searches only its documents.
     client_id: str
+    # The practice's phone, put in the urgent reply. None when the practice has not set one.
+    contact_phone: str | None
     intent: str | None
     booking_action: str | None
     # "urgent" or "diagnosis" when the safety node answered; None otherwise. Set every turn.

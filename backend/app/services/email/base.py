@@ -8,6 +8,8 @@ class EmailMessage:
     subject: str
     html_content: str
     text_content: str
+    # Display name for the From header. None falls back to the configured sender name.
+    from_name: str | None = None
 
 
 class EmailDeliveryError(Exception):
@@ -25,7 +27,12 @@ class EmailDeliveryError(Exception):
 
 class EmailSender(Protocol):
     def send_email(
-        self, to_email: str, subject: str, html_content: str, text_content: str
+        self,
+        to_email: str,
+        subject: str,
+        html_content: str,
+        text_content: str,
+        from_name: str | None = None,
     ) -> str | None:
         """Send one message. Returns the provider's message ID when there is one."""
         ...

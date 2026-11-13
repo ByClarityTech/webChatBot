@@ -118,6 +118,12 @@ _AIRWAY = re.compile(
     r"\bswallow\w*|\bthroat\b|\bneck\b|\bbreath\w*|\bairway\b|\bchok\w*|\btongue\b|\bgag\w*"
     r"|\btrag\w*|\bgarganta\b|\bcuello\b|\brespir\w*|\baire\b|\bahog\w*|\blengua\b"
 )
+# Swelling of the face, jaw or gums is urgent on its own. Teeth are left out on purpose:
+# a swollen tooth is common and is routed to the office, not the emergency reply.
+_FACE_SITE = re.compile(
+    r"\b(face|facial|jaw|jowl|cheek|gum|gums|lip|lips|chin|cara|mandibula|quijada|mejilla|"
+    r"mejillas|encia|encias|labio|labios|barbilla|menton)\b"
+)
 
 
 def check_urgent(text: object) -> str | None:
@@ -128,9 +134,12 @@ def check_urgent(text: object) -> str | None:
     for category, pattern in _URGENT_PATTERNS:
         if pattern.search(cleaned):
             return category
-    # Swelling only counts when the same message also mentions swallowing or breathing.
+    # Swelling with a breathing or swallowing word is the airway case.
     if _SWELLING.search(cleaned) and _AIRWAY.search(cleaned):
         return "swelling_airway"
+    # Facial, jaw or gum swelling is urgent without any airway word.
+    if _SWELLING.search(cleaned) and _FACE_SITE.search(cleaned):
+        return "facial_swelling"
     if _BLEEDING.search(cleaned) and _BLEEDING_SEVERE.search(cleaned):
         return "bleeding"
     return None
@@ -215,23 +224,43 @@ def has_unsupported_price(reply: object, context_text: object) -> bool:
 
 # ---------------------------------------------------------------- templates
 
-EMERGENCY_EN = (
+_EMERGENCY_EN = (
     "This may be a medical emergency. If someone has trouble breathing or swallowing, swelling "
-    "of the face or neck that is getting worse, bleeding that will not stop, chest pain, "
-    "weakness or slurred speech, is unconscious or having a seizure, or has a serious injury "
-    "to the face or mouth, call your local emergency number now or go to the nearest emergency "
-    "room. If a tooth has been knocked out, call our office right away."
+    "of the face, jaw or gums, bleeding that will not stop, chest pain, weakness or slurred "
+    "speech, is unconscious or having a seizure, or has a serious injury to the face or mouth, "
+    "call 911 or your local emergency number now, or go to the nearest emergency room."
 )
-EMERGENCY_ES = (
+_EMERGENCY_ES = (
     "Esto podría ser una emergencia médica. Si usted o alguien cerca de usted tiene dificultad "
-    "para respirar o tragar, hinchazón de la cara o del cuello que empeora, sangrado que no se "
+    "para respirar o tragar, hinchazón de la cara, la mandíbula o las encías, sangrado que no se "
     "detiene, dolor de pecho, debilidad o habla arrastrada, está inconsciente o tiene "
-    "convulsiones, o sufrió una lesión grave en la cara o la boca, llame ahora al número de "
-    "emergencias de su localidad o vaya a la sala de urgencias más cercana. Si se le ha caído "
-    "un diente, llame a nuestra oficina de inmediato."
+    "convulsiones, o sufrió una lesión grave en la cara o la boca, llame ahora al 911 o al "
+    "número de emergencias de su localidad, o vaya a la sala de urgencias más cercana."
 )
-# Always both languages: a wrong guess about the visitor's language must never hide this.
-EMERGENCY_REPLY = f"{EMERGENCY_EN}\n\n{EMERGENCY_ES}"
+
+
+def emergency_reply(contact_phone: str | None = None) -> str:
+    """The fixed urgent reply in both languages, with the practice's number when one is set.
+
+    Both languages always appear: a wrong guess about the visitor's language must never hide
+    the instruction to call 911.
+    """
+    phone = (contact_phone or "").strip()
+    if phone:
+        english = (
+            f"{_EMERGENCY_EN} You can also call our office directly at {phone}. "
+            "If a tooth has been knocked out, call our office right away."
+        )
+        spanish = (
+            f"{_EMERGENCY_ES} También puede llamar directamente a nuestra oficina al {phone}. "
+            "Si se le ha caído un diente, llame a nuestra oficina de inmediato."
+        )
+    else:
+        english = f"{_EMERGENCY_EN} If a tooth has been knocked out, call our office right away."
+        spanish = (
+            f"{_EMERGENCY_ES} Si se le ha caído un diente, llame a nuestra oficina de inmediato."
+        )
+    return f"{english}\n\n{spanish}"
 
 DIAGNOSIS_EN = (
     "I can't tell you what is causing a symptom or give a diagnosis. Please book a visit with "

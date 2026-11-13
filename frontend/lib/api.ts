@@ -12,6 +12,8 @@ export type ChatResponse = {
   sources: SourceCitation[];
   action?: string | null;
   safety?: "urgent" | "diagnosis" | null;
+  /** Practice phone, present only with an urgent reply and only when the practice set one. */
+  contact_phone?: string | null;
   session_id?: string | null;
   /** True when an earlier conversation ended (30 minutes idle or closed) and this one started. */
   session_reset?: boolean;

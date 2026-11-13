@@ -25,15 +25,20 @@ def _build(user: UserRecord, *, name: str, subject: str, values: dict[str, str])
         subject=subject,
         html_content=html_content,
         text_content=text_content,
+        # The tenant's own name is the sender. Users without a client fall back to the default.
+        from_name=user.client_name or None,
     )
+
+
+def _practice(user: UserRecord) -> str:
+    return user.client_name or "your organization"
 
 
 def _common(user: UserRecord) -> dict[str, str]:
     settings = get_settings()
     return {
         "full_name": user.full_name,
-        "practice_name": user.client_name or "your organization",
-        "from_name": settings.emails_from_name,
+        "practice_name": _practice(user),
         "login_url": f"{settings.admin_frontend_url.rstrip('/')}/admin/login",
     }
 
@@ -43,9 +48,15 @@ def _link(path: str, token: str) -> str:
     return f"{base}{path}?token={quote(token, safe='')}"
 
 
+def _account_subject(user: UserRecord, action: str) -> str:
+    # No client name: keep the subject neutral, never "your your organization".
+    if user.client_name:
+        return f"{action} your {user.client_name} admin account"
+    return f"{action} your admin account"
+
+
 def invite_message(user: UserRecord, token: str) -> EmailMessage:
     settings = get_settings()
-    practice = user.client_name or "your organization"
     values = _common(user) | {
         "setup_url": _link("/auth/setup-password", token),
         "expires_hours": str(settings.invite_ttl_hours),
@@ -53,17 +64,20 @@ def invite_message(user: UserRecord, token: str) -> EmailMessage:
     return _build(
         user,
         name="invite",
-        subject=f"Set up your {practice} admin account",
+        subject=_account_subject(user, "Set up"),
         values=values,
     )
 
 
 def welcome_message(user: UserRecord) -> EmailMessage:
-    practice = user.client_name or "your organization"
+    if user.client_name:
+        subject = f"Your {user.client_name} admin account is ready"
+    else:
+        subject = "Your admin account is ready"
     return _build(
         user,
         name="welcome",
-        subject=f"Your {practice} admin account is ready",
+        subject=subject,
         values=_common(user),
     )
 

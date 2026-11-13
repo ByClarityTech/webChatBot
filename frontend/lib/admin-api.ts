@@ -183,6 +183,38 @@ export async function changeOwnPassword(currentPassword: string, newPassword: st
   });
 }
 
+// ---------------------------------------------------------------- public account links
+// Reached from an emailed link or the login page, so no session is needed. Errors keep the
+// API's message (for example "This link is invalid or has expired.").
+
+async function publicPost(path: string, body: unknown): Promise<string> {
+  const response = await apiFetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+  const result = (await response.json()) as { detail?: string };
+  return result.detail ?? "";
+}
+
+/** Sets the first password from an invite link. Returns the API's confirmation text. */
+export function setupPassword(token: string, newPassword: string): Promise<string> {
+  return publicPost("/api/v1/auth/password/setup", { token, new_password: newPassword });
+}
+
+/** Sets a new password from a reset link. Returns the API's confirmation text. */
+export function resetPassword(token: string, newPassword: string): Promise<string> {
+  return publicPost("/api/v1/auth/reset-password", { token, new_password: newPassword });
+}
+
+/** Asks for a reset link. The reply is the same whether or not the account exists. */
+export function requestPasswordReset(email: string): Promise<string> {
+  return publicPost("/api/v1/auth/forgot-password", { email });
+}
+
 // ---------------------------------------------------------------- users
 
 export async function listUsers(clientId?: string): Promise<ManagedUser[]> {
@@ -193,14 +225,22 @@ export async function listUsers(clientId?: string): Promise<ManagedUser[]> {
 export type NewUser = {
   email: string;
   full_name: string;
-  password: string;
   user_type: "admin" | "support";
   /** Required for Super Admins; ignored for Admins (always their own client). */
   client_id?: string;
 };
 
+/** No password is sent: the API emails the user a setup link (an invite). */
 export function createUser(user: NewUser): Promise<ManagedUser> {
   return adminJson<ManagedUser>("/api/v1/admin/users", "POST", user);
+}
+
+/** Emails a new setup link. Any link sent earlier stops working. Active users only. */
+export function resendInvite(userId: string): Promise<ManagedUser> {
+  return adminJson<ManagedUser>(
+    `/api/v1/admin/users/${encodeURIComponent(userId)}/resend-invite`,
+    "POST",
+  );
 }
 
 export type UserChanges = {

@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
 import { useAdminUser } from "@/components/admin/admin-session";
+import { canAccess } from "@/lib/admin-permissions";
 import {
   AnalyticsReport,
   DayPoint,
@@ -454,20 +455,23 @@ export function AnalyticsDashboard() {
             </p>
           </section>
 
-          <section aria-labelledby="export-heading" className="space-y-3">
-            <h2 id="export-heading" className="text-base font-semibold text-slate-900">Export</h2>
-            <div className="flex flex-wrap gap-3">
-              <button type="button" className={buttonClass} disabled={exporting}
-                onClick={() => void handleExport("summary")}>
-                Download summary (CSV)
-              </button>
-              <button type="button" className={buttonClass} disabled={exporting}
-                onClick={() => void handleExport("conversations")}>
-                Download conversation list (CSV)
-              </button>
-            </div>
-            {exportMessage ? <p role="status" className="text-sm text-slate-700">{exportMessage}</p> : null}
-          </section>
+          {/* Export is admin only (PRD D-02). The API enforces it; this hides the controls. */}
+          {canAccess(actor.user_type, "analytics_export") && (
+            <section aria-labelledby="export-heading" className="space-y-3">
+              <h2 id="export-heading" className="text-base font-semibold text-slate-900">Export</h2>
+              <div className="flex flex-wrap gap-3">
+                <button type="button" className={buttonClass} disabled={exporting}
+                  onClick={() => void handleExport("summary")}>
+                  Download summary (CSV)
+                </button>
+                <button type="button" className={buttonClass} disabled={exporting}
+                  onClick={() => void handleExport("conversations")}>
+                  Download conversation list (CSV)
+                </button>
+              </div>
+              {exportMessage ? <p role="status" className="text-sm text-slate-700">{exportMessage}</p> : null}
+            </section>
+          )}
         </>
       ) : null}
     </div>

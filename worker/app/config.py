@@ -20,6 +20,9 @@ class WorkerSettings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "public_site_docs"
     openai_api_key: str = ""
+    # Shared secret the backend sends as X-Internal-Token. Empty means every protected
+    # endpoint refuses requests (fail closed).
+    internal_worker_secret: str = ""
     embedding_model: str = "text-embedding-3-small"
     docling_cache_dir: str = "/tmp/docling_cache"
     upload_dir: str = "/data/uploads"

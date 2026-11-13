@@ -16,7 +16,14 @@ class ConsoleEmailSender:
     def __init__(self, *, app_env: str) -> None:
         self._app_env = app_env
 
-    def send_email(self, to_email: str, subject: str, html_content: str, text_content: str) -> None:
+    def send_email(
+        self,
+        to_email: str,
+        subject: str,
+        html_content: str,
+        text_content: str,
+        from_name: str | None = None,
+    ) -> None:
         if self._app_env == "development":
             logger.info(
                 "[console email, not sent] to=%s subject=%s\n%s",

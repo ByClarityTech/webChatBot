@@ -55,7 +55,7 @@ def booking_app():
 @pytest.mark.asyncio
 async def test_oauth_status_not_connected(oauth_app):
     with (
-        signed_in(oauth_app, UserType.support) as user,
+        signed_in(oauth_app, UserType.admin) as user,
         patch(
             "app.services.client_scope.get_client",
             new_callable=AsyncMock,

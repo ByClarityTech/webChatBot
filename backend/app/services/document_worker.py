@@ -42,11 +42,15 @@ MAX_FILENAME_LENGTH = 255
 
 async def worker_request(method: str, path: str, **kwargs) -> httpx.Response:
     settings = get_settings()
+    # Every worker endpoint except /health needs the shared secret. An empty secret is sent
+    # as-is, and the worker then refuses the call.
+    headers = {**kwargs.pop("headers", {}), "X-Internal-Token": settings.internal_worker_secret}
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
             return await client.request(
                 method,
                 f"{settings.worker_url.rstrip('/')}{path}",
+                headers=headers,
                 **kwargs,
             )
     except httpx.RequestError as exc:

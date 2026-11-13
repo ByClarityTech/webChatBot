@@ -164,8 +164,8 @@ def redirect_params(response) -> dict:
     return {key: values[0] for key, values in parse_qs(location.query).items()}
 
 
-@pytest.mark.parametrize("user_type", [UserType.super_admin, UserType.admin, UserType.support])
-async def test_status_works_for_every_calendar_role(app, user_type):
+@pytest.mark.parametrize("user_type", [UserType.super_admin, UserType.admin])
+async def test_status_works_for_every_admin_role(app, user_type):
     params = {"client_id": str(CLIENT_ID)} if user_type == UserType.super_admin else {}
     with (
         signed_in(app, user_type),
@@ -175,6 +175,19 @@ async def test_status_works_for_every_calendar_role(app, user_type):
             response = await client.get("/api/v1/admin/google/oauth/status", params=params)
     assert response.status_code == 200
     assert response.json()["connected"] is False
+
+
+async def test_support_cannot_read_or_change_the_google_connection(app):
+    """Calendar settings are D-05, admins only. Support gets 403 on the connection routes."""
+    with (
+        signed_in(app, UserType.support),
+        patch.object(google_oauth, "get_client_google_token", AsyncMock(return_value=None)),
+    ):
+        async with http(app) as client:
+            status = await client.get("/api/v1/admin/google/oauth/status")
+            disconnect = await client.delete("/api/v1/admin/google/oauth/disconnect")
+    assert status.status_code == 403
+    assert disconnect.status_code == 403
 
 
 async def test_status_shows_reconnect_needed(app):

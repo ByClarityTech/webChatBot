@@ -23,6 +23,7 @@ import { consumeSse } from "@/lib/sse";
 import { AvailabilitySlot, BookingError, createBooking, getSuggestions } from "@/lib/booking-api";
 
 import { BookingDraft, BookingForm } from "./booking-form";
+import { EmergencyAlertCard } from "./emergency-alert-card";
 import { FallbackCard } from "./fallback-card";
 import { ShareDetailsForm, ShareValues } from "./share-details-form";
 import { todayDateString } from "./slot-picker";
@@ -45,6 +46,8 @@ type ChatMessage = {
   content: string;
   /** Contact options under an answer the knowledge base could not give. */
   fallback?: FallbackCardData;
+  /** Set on an urgent safety reply: the emergency call buttons are drawn under it. */
+  urgent?: { phone: string | null };
   /** A message a staff member typed in the live handover. */
   speaker?: "staff";
   /** Tappable related-question chips under this answer. */
@@ -656,6 +659,8 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
             role: "assistant",
             content: response.reply,
             fallback: response.fallback ?? undefined,
+            urgent:
+              response.safety === "urgent" ? { phone: response.contact_phone ?? null } : undefined,
             // Chips only after an answer from the model or an approved FAQ.
             related:
               response.answer_source === "model" || response.answer_source === "faq"
@@ -841,6 +846,7 @@ export function ChatPanel({ compact = false, embed = false }: ChatPanelProps) {
                 >
                   <p className="whitespace-pre-wrap break-words">{message.content}</p>
                 </div>
+                {message.urgent && <EmergencyAlertCard phone={message.urgent.phone} />}
                 {message.fallback && (
                   <FallbackCard
                     card={message.fallback}

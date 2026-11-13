@@ -50,7 +50,11 @@ def log_email_configuration() -> None:
 def deliver(message: EmailMessage) -> None:
     try:
         get_email_sender().send_email(
-            message.to_email, message.subject, message.html_content, message.text_content
+            message.to_email,
+            message.subject,
+            message.html_content,
+            message.text_content,
+            from_name=message.from_name,
         )
     except EmailDeliveryError as exc:
         logger.error("Email delivery failed: %s subject=%s", exc, message.subject)

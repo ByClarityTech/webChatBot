@@ -28,6 +28,8 @@ from app.services.client_scope import resolve_optional_client_scope
 router = APIRouter(prefix="/admin/analytics", tags=["admin-analytics"])
 
 AnalyticsActor = Annotated[UserRecord, Depends(require_access(Area.analytics))]
+# The CSV download is admin only (PRD D-02); Support gets the dashboard but not the file.
+ExportActor = Annotated[UserRecord, Depends(require_access(Area.analytics_export))]
 ClientIdQuery = Annotated[UUID | None, Query()]
 PresetQuery = Annotated[str | None, Query(pattern=r"^(7d|30d|90d)$")]
 
@@ -70,7 +72,7 @@ async def get_analytics(
 @router.get("/export")
 async def export_analytics(
     request: Request,
-    actor: AnalyticsActor,
+    actor: ExportActor,
     kind: Annotated[Literal["summary", "conversations"], Query()] = "summary",
     client_id: ClientIdQuery = None,
     preset: PresetQuery = None,

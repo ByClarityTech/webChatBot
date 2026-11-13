@@ -49,16 +49,49 @@ function mmss(totalSeconds: number): string {
   return `${String(Math.floor(safe / 60)).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
 }
 
-/** Alert sound needs a click first (browsers block autoplay). This plays a short tone. */
+function tone(context: AudioContext) {
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.frequency.value = 880;
+  gain.gain.value = 0.2;
+  oscillator.connect(gain);
+  gain.connect(context.destination);
+  oscillator.start();
+  oscillator.stop(context.currentTime + 0.25);
+}
+
+/**
+ * Alert sound needs a click first (browsers block autoplay). The click creates and resumes
+ * the AudioContext, then plays a confirmation tone so the user hears that it worked.
+ * Sound is only marked on once the context is actually running.
+ */
 function useAlertSound() {
   const contextRef = useRef<AudioContext | null>(null);
   const [enabled, setEnabled] = useState(false);
+  const [failed, setFailed] = useState(false);
 
-  const enable = useCallback(() => {
-    const context = new AudioContext();
-    void context.resume();
-    contextRef.current = context;
-    setEnabled(true);
+  const enable = useCallback(async () => {
+    setFailed(false);
+    try {
+      const Ctor =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!Ctor) {
+        setFailed(true);
+        return;
+      }
+      const context = contextRef.current ?? new Ctor();
+      contextRef.current = context;
+      await context.resume();
+      if (context.state !== "running") {
+        setFailed(true);
+        return;
+      }
+      tone(context);
+      setEnabled(true);
+    } catch {
+      setFailed(true);
+    }
   }, []);
 
   const play = useCallback(() => {
@@ -66,17 +99,10 @@ function useAlertSound() {
     if (!context || context.state !== "running") {
       return;
     }
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    oscillator.frequency.value = 880;
-    gain.gain.value = 0.2;
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.start();
-    oscillator.stop(context.currentTime + 0.25);
+    tone(context);
   }, []);
 
-  return { enabled, enable, play };
+  return { enabled, failed, enable, play };
 }
 
 export function StaffInbox() {
@@ -102,6 +128,7 @@ export function StaffInbox() {
   const searchParams = useSearchParams();
   const linkedSession = searchParams.get("conversation");
   const linkedRef = useRef<string | null>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
 
   const refreshQueues = useCallback(async () => {
     if (needsClient) return;
@@ -303,11 +330,19 @@ export function StaffInbox() {
     });
   }
 
+  // Keep the newest message in view when the thread changes or a message arrives.
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [chat?.id, chat?.messages.length]);
+
   const iAccepted = chat !== null && chat.accepted_by === actor.id;
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-3">
         <div className="flex items-center gap-3 text-sm text-slate-700">
           <span
             className={`inline-block h-2.5 w-2.5 rounded-full ${streamUp ? "bg-green-500" : "bg-slate-300"}`}
@@ -321,11 +356,14 @@ export function StaffInbox() {
         <div className="flex items-center gap-3">
           <ClientPicker scope={scope} id="inbox-client" />
           {sound.enabled ? (
-            <span className="text-xs text-green-700">Alert sound on</span>
+            <span className="inline-flex items-center gap-1.5 rounded-lg bg-green-50 px-3 py-1.5 text-sm text-green-800">
+              <span className="inline-block h-2 w-2 rounded-full bg-green-500" aria-hidden />
+              Alert sound on
+            </span>
           ) : (
             <button
               type="button"
-              onClick={sound.enable}
+              onClick={() => void sound.enable()}
               className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
             >
               Enable alert sound
@@ -335,26 +373,28 @@ export function StaffInbox() {
       </div>
 
       {!sound.enabled && (
-        <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
-          Sound alerts are off. Browsers block sound until you click. Enable alert sound to hear new chats.
+        <p className="shrink-0 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+          {sound.failed
+            ? "Sound could not be turned on in this browser. Check that sound is allowed for this site, then try again."
+            : "Sound alerts are off. Browsers block sound until you click. Enable alert sound to hear new chats."}
         </p>
       )}
       {error && (
-        <p className="text-sm text-red-600" role="alert">
+        <p className="shrink-0 text-sm text-red-600" role="alert">
           {error}
         </p>
       )}
       {notice && (
-        <p className="text-sm text-green-700" role="status">
+        <p className="shrink-0 text-sm text-green-700" role="status">
           {notice}
         </p>
       )}
 
       {needsClient ? (
-        <p className="text-sm text-slate-500">Choose a client to see its inbox.</p>
+        <p className="shrink-0 text-sm text-slate-500">Choose a client to see its inbox.</p>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
-          <aside className="space-y-5 rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden lg:flex-row">
+          <aside className="max-h-64 shrink-0 space-y-5 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 lg:h-full lg:max-h-none lg:w-80">
             <section>
               <h2 className="text-sm font-semibold text-slate-900">Pending ({queues?.pending.length ?? 0})</h2>
               <ul className="mt-2 space-y-2">
@@ -435,12 +475,12 @@ export function StaffInbox() {
             </section>
           </aside>
 
-          <section className="flex min-h-[420px] flex-col rounded-2xl border border-slate-200 bg-white p-4">
+          <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white p-4">
             {!chat ? (
               <p className="m-auto text-sm text-slate-500">Choose a chat, or accept one from Pending.</p>
             ) : (
               <>
-                <header className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
                   <div>
                     <p className="text-sm font-semibold text-slate-900">
                       {chat.contact?.name ?? "Anonymous visitor"}
@@ -460,7 +500,7 @@ export function StaffInbox() {
                   )}
                 </header>
 
-                <div className="my-3 flex-1 space-y-2 overflow-y-auto">
+                <div ref={messagesRef} className="my-3 min-h-0 flex-1 space-y-2 overflow-y-auto">
                   {chat.messages.map((message) => (
                     <div key={message.id} className={`flex ${message.sender === "staff" ? "justify-end" : "justify-start"}`}>
                       <div
@@ -478,13 +518,13 @@ export function StaffInbox() {
                 </div>
 
                 {!iAccepted ? (
-                  <p className="text-sm text-slate-600">
+                  <p className="shrink-0 text-sm text-slate-600">
                     {chat.accepted_by
                       ? "Another team member is handling this chat."
                       : "Accept this chat to reply."}
                   </p>
                 ) : (
-                  <div className="space-y-3">
+                  <div className="shrink-0 space-y-3">
                     {draft && (
                       <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-3" aria-label="AI draft suggestion">
                         <p className="text-xs font-medium text-slate-600">AI draft (suggestion, not sent)</p>

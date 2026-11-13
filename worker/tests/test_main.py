@@ -29,6 +29,8 @@ def worker(settings, qdrant, monkeypatch):
     monkeypatch.setattr(main, "convert_to_markdown", fake_convert)
     monkeypatch.setattr(main, "upsert_documents", fake_upsert)
     with TestClient(main.app) as client:
+        # Every test here acts as the backend. Auth-specific tests override the header.
+        client.headers["X-Internal-Token"] = settings.internal_worker_secret
         client.calls = calls
         yield client
 

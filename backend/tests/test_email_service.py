@@ -68,7 +68,7 @@ def test_defaults_match_the_agreed_values():
     settings = get_settings()
     assert settings.ses_region == "ap-south-1"
     assert settings.emails_from_email == "tech@claritytechlabs.com"
-    assert settings.emails_from_name == "Clarity Dental AI"
+    assert settings.emails_from_name == "Website Assistant"
     assert settings.invite_ttl_hours == 24
     assert settings.password_reset_ttl_hours == 1
 
@@ -146,6 +146,17 @@ def _ses(client):
         from_name="Clarity Dental AI",
         configuration_set="cfg-set",
         client=client,
+    )
+
+
+def test_send_email_uses_the_per_message_sender_name_when_given():
+    client = MagicMock()
+    client.send_email.return_value = {"MessageId": "msg-2"}
+
+    _ses(client).send_email("jane@clinic.com", "Hi", "<p>h</p>", "t", from_name="Smile Dental, Chennai")
+
+    assert client.send_email.call_args.kwargs["Source"] == (
+        '"Smile Dental, Chennai" <tech@claritytechlabs.com>'
     )
 
 

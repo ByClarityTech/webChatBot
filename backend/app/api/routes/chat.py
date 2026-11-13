@@ -7,7 +7,7 @@ from app.agents.public.nodes.safety import safety_node
 from app.api.deps.auth import optional_admin_user
 from app.core.origin_check import verify_client_origin
 from app.core.rate_limit import check_chat_rate_limit
-from app.core.safety import EMERGENCY_REPLY, check_urgent, detect_language, pick
+from app.core.safety import check_urgent, detect_language, emergency_reply, pick
 from app.db.models.client import ClientRecord
 from app.db.models.faq import list_default_questions
 from app.db.models.live_handover import get_open_handover_for_session
@@ -105,13 +105,16 @@ async def _degraded_reply(
     client: ClientRecord, session: SessionHandle, text: str, language: str
 ) -> ChatResponse:
     """The model or retrieval is unavailable: safety still applies, then approved FAQs only."""
-    bypass = safety_node({"messages": [HumanMessage(content=text)]})
+    bypass = safety_node(
+        {"messages": [HumanMessage(content=text)], "contact_phone": client.contact_phone}
+    )
     if bypass.get("safety"):
         return _response(
             session,
             reply=bypass["messages"][0].content,
             source="safety",
             safety=bypass["safety"],
+            contact_phone=client.contact_phone if bypass["safety"] == "urgent" else None,
         )
 
     faq = await answer_from_faqs(client.id, text)
@@ -129,15 +132,18 @@ async def _degraded_reply(
     )
 
 
-async def _live_turn(handover, session: SessionHandle, text: str, language: str) -> ChatResponse:
+async def _live_turn(
+    client: ClientRecord, handover, session: SessionHandle, text: str, language: str
+) -> ChatResponse:
     await live.visitor_message(handover, text)
     if check_urgent(text):
         # Staff see the message too; the visitor gets the emergency text straight away.
         return _response(
             session,
-            reply=EMERGENCY_REPLY,
+            reply=emergency_reply(client.contact_phone),
             source="safety",
             safety="urgent",
+            contact_phone=client.contact_phone,
         )
     if handover.status == "pending":
         reply = pick(language, LIVE_PENDING_EN, LIVE_PENDING_ES)
@@ -154,6 +160,7 @@ def _response(
     sources: list[SourceCitation] | None = None,
     action: str | None = None,
     safety: str | None = None,
+    contact_phone: str | None = None,
     fallback: FallbackCard | None = None,
     related: list[str] | None = None,
 ) -> ChatResponse:
@@ -163,6 +170,8 @@ def _response(
         sources=sources or [],
         action=action,
         safety=safety,
+        # Only an urgent reply carries the practice number; the widget builds the call buttons.
+        contact_phone=contact_phone if safety == "urgent" else None,
         session_id=str(session.session_id),
         session_reset=session.reset,
         answer_source=source,
@@ -222,7 +231,7 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
         None if session.reset else await get_open_handover_for_session(session.session_id)
     )
     if open_handover is not None:
-        return await _live_turn(open_handover, session, text, language)
+        return await _live_turn(client, open_handover, session, text, language)
 
     try:
         result = await graph.ainvoke(
@@ -231,6 +240,7 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
                 "retrieved_docs": [],
                 "thread_id": thread_id,
                 "client_id": str(client.id),
+                "contact_phone": client.contact_phone,
                 "intent": None,
                 "booking_action": None,
             },
@@ -274,7 +284,13 @@ async def chat(request_body: ChatRequest, request: Request) -> ChatResponse:
     booking_action = result.get("booking_action")
 
     if safety:
-        return _response(session, reply=reply, source="safety", safety=safety)
+        return _response(
+            session,
+            reply=reply,
+            source="safety",
+            safety=safety,
+            contact_phone=client.contact_phone,
+        )
     if booking_action:
         return _response(session, reply=reply, source="booking", action=booking_action)
 

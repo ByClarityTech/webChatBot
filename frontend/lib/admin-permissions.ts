@@ -16,13 +16,15 @@ export type AdminArea =
   | "practice_contact"
   | "inbox"
   | "analytics"
+  | "analytics_export"
   | "conversations";
 
 const AREA_ACCESS: Record<AdminArea, readonly UserType[]> = {
   dashboard: ["super_admin", "admin", "support"],
   documents: ["super_admin", "admin"],
-  calendar: ["super_admin", "admin", "support"],
-  business_hours: ["super_admin", "admin", "support"],
+  // D-05 settings: admins only.
+  calendar: ["super_admin", "admin"],
+  business_hours: ["super_admin", "admin"],
   bookings: ["super_admin", "admin", "support"],
   audit_log: ["super_admin", "admin"],
   users: ["super_admin", "admin"],
@@ -31,6 +33,8 @@ const AREA_ACCESS: Record<AdminArea, readonly UserType[]> = {
   practice_contact: ["super_admin", "admin"],
   inbox: ["super_admin", "admin", "support"],
   analytics: ["super_admin", "admin", "support"],
+  // PRD D-02: export is admin only.
+  analytics_export: ["super_admin", "admin"],
   // Transcripts and phone lookups: Support is not included.
   conversations: ["super_admin", "admin"],
 };

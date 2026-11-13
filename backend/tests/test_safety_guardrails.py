@@ -31,18 +31,19 @@ from app.services.fallback import copy_for as _copy_for
 from app.core.safety import (
     DIAGNOSIS_EN,
     DIAGNOSIS_ES,
-    EMERGENCY_EN,
-    EMERGENCY_ES,
-    EMERGENCY_REPLY,
     MAX_INPUT_CHARS,
     PRICE_EN,
     PRICE_ES,
     check_diagnosis_probe,
     check_urgent,
     detect_language,
+    emergency_reply,
     has_unsupported_price,
     normalize,
 )
+
+# The urgent reply for a practice with no phone on file. Tests that need the number pass one in.
+EMERGENCY_REPLY = emergency_reply(None)
 
 # ---------------------------------------------------------------- normalization
 
@@ -169,10 +170,41 @@ def test_adversarial_urgent_phrasing_still_triggers(category, message):
     assert check_urgent(message) == category
 
 
-def test_swelling_alone_does_not_bypass():
-    """Swelling without swallowing or breathing goes to the model, per the approved scope."""
-    assert check_urgent("my cheek is swollen after the filling") is None
-    assert check_urgent("se me hinchó la mejilla después del empaste") is None
+@pytest.mark.parametrize(
+    "message",
+    [
+        "my jaw is swollen",
+        "there is swelling in my gums",
+        "my cheek is swollen after the filling",
+        "my face is swollen on the left side",
+        "gum swelling and pain since this morning",
+        "swelling along my jaw since yesterday",
+        "se me hinchó la encía",
+        "tengo la mandíbula inflamada",
+        "mi cara está hinchada",
+        "se me hinchó la mejilla después del empaste",
+    ],
+)
+def test_facial_jaw_and_gum_swelling_is_urgent_on_its_own(message):
+    """No breathing or swallowing word is needed for these, per the PRD safety requirement."""
+    assert check_urgent(message) == "facial_swelling"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "my tooth is swollen after the filling",
+        "my ankle is swollen after the run",
+        "se me hinchó tobillo después de correr",
+    ],
+)
+def test_swelling_away_from_the_face_does_not_bypass(message):
+    """Tooth and body swelling without an airway word goes to the model, per the approved scope."""
+    assert check_urgent(message) is None
+
+
+def test_facial_swelling_with_an_airway_word_keeps_the_airway_category():
+    assert check_urgent("my jaw is swollen and I can't swallow") == "swelling_airway"
 
 
 def test_swallowing_alone_does_not_bypass():
@@ -292,15 +324,38 @@ def test_price_check_tolerates_non_string_inputs():
 
 
 def test_emergency_reply_is_bilingual_english_then_spanish():
-    assert EMERGENCY_REPLY.startswith(EMERGENCY_EN)
-    assert EMERGENCY_REPLY.endswith(EMERGENCY_ES)
+    english, spanish = emergency_reply(None).split("\n\n")
+    assert english.startswith("This may be a medical emergency.")
+    assert spanish.startswith("Esto podría ser una emergencia médica.")
+
+
+def test_emergency_reply_tells_the_visitor_to_call_911_in_both_languages():
+    english, spanish = emergency_reply(None).split("\n\n")
+    assert "call 911 or your local emergency number" in english
+    assert "llame ahora al 911" in spanish
+
+
+def test_emergency_reply_includes_the_practice_phone_when_set():
+    reply = emergency_reply("(555) 010-2030")
+    english, spanish = reply.split("\n\n")
+    assert "call our office directly at (555) 010-2030" in english
+    assert "a nuestra oficina al (555) 010-2030" in spanish
+    assert "911" in reply
+
+
+def test_emergency_reply_omits_the_phone_sentence_when_none_or_blank():
+    for phone in (None, "", "   "):
+        reply = emergency_reply(phone)
+        assert "directly at" not in reply
+        assert "oficina al" not in reply
+        assert "911" in reply
 
 
 def test_spanish_templates_use_formal_usted():
-    spanish = " ".join([EMERGENCY_ES, DIAGNOSIS_ES, PRICE_ES])
+    spanish = " ".join([emergency_reply(None).split("\n\n")[1], DIAGNOSIS_ES, PRICE_ES])
     informal = re.compile(r"\b(tú|tienes|puedes|llama|ve|quieres|sabes|eres)\b", re.IGNORECASE)
     assert informal.search(spanish) is None
-    assert "usted" in EMERGENCY_ES.lower()
+    assert "usted" in spanish.lower()
 
 
 def test_no_template_is_empty_or_unfilled():
@@ -351,6 +406,15 @@ def test_node_bypasses_on_urgent_and_clears_on_routine():
 
     routine = safety_node(_state("what are your hours?"))
     assert routine == {"safety": None}
+
+
+def test_node_puts_the_practice_phone_in_the_urgent_reply():
+    state = _state("my jaw is swollen")
+    state["contact_phone"] = "555-010-2030"
+    result = safety_node(state)
+    assert result["safety"] == SAFETY_URGENT
+    assert "555-010-2030" in result["messages"][0].content
+    assert "911" in result["messages"][0].content
 
 
 def test_node_answers_diagnosis_in_the_visitors_language():
@@ -553,6 +617,49 @@ async def test_route_returns_the_safety_flag_for_an_urgent_turn(chat_app, open_c
     assert body["reply"] == EMERGENCY_REPLY
     assert body["safety"] == "urgent"
     assert body["sources"] == []
+    assert body["contact_phone"] is None
+
+
+async def test_urgent_route_sends_the_practice_phone_for_the_widget_call_button(
+    chat_app, open_client
+):
+    open_client.contact_phone = "555-010-2030"
+    graph = MagicMock()
+    graph.ainvoke = async_returning(
+        {
+            "messages": [AIMessage(content=emergency_reply("555-010-2030"))],
+            "safety": SAFETY_URGENT,
+        }
+    )
+    chat_app.state.agent_graph = graph
+
+    async with _client(chat_app) as client:
+        response = await client.post(
+            "/api/v1/chat", json={"message": "my jaw is swollen", "client": "clinic"}
+        )
+
+    body = response.json()
+    assert body["safety"] == "urgent"
+    assert body["contact_phone"] == "555-010-2030"
+    assert "555-010-2030" in body["reply"]
+    # The graph is told the number, so its own urgent reply carries it too.
+    assert graph.ainvoke.call_args.args[0]["contact_phone"] == "555-010-2030"
+
+
+async def test_non_urgent_route_never_carries_the_phone(chat_app, open_client):
+    open_client.contact_phone = "555-010-2030"
+    graph = MagicMock()
+    graph.ainvoke = async_returning(
+        {"messages": [AIMessage(content="We are open weekdays.")], "safety": None}
+    )
+    chat_app.state.agent_graph = graph
+
+    async with _client(chat_app) as client:
+        response = await client.post(
+            "/api/v1/chat", json={"message": "what are your hours?", "client": "clinic"}
+        )
+
+    assert response.json()["contact_phone"] is None
 
 
 async def test_route_fallbacks_follow_the_visitor_language(chat_app, open_client):

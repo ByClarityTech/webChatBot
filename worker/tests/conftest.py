@@ -13,6 +13,7 @@ def settings(tmp_path, monkeypatch):
         qdrant_url="http://qdrant.invalid:6333",
         qdrant_collection="test_docs",
         openai_api_key="test-key",
+        internal_worker_secret="test-internal-secret",
         upload_dir=str(tmp_path / "uploads"),
         docling_cache_dir=str(tmp_path / "cache"),
     )

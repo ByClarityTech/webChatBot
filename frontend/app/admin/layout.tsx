@@ -101,14 +101,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   return (
     <AdminSessionProvider value={{ user, refresh }}>
-      <div className="flex min-h-screen">
-        <aside className="flex w-64 shrink-0 flex-col border-r border-slate-200 bg-white">
+      <div className="flex h-screen overflow-hidden">
+        <aside className="flex h-full w-64 shrink-0 flex-col border-r border-slate-200 bg-white">
           <div className="border-b border-slate-200 px-5 py-4">
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Admin</p>
             <h1 className="text-lg font-semibold text-slate-900">Dashboard</h1>
           </div>
 
-          <nav className="flex-1 space-y-1 px-3 py-4">
+          <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-4">
             {navItems.map((item) => {
               const active =
                 item.href === "/admin"
@@ -153,7 +153,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           </div>
         </aside>
 
-        <main className="min-w-0 flex-1 bg-slate-50">
+        <main className="h-full min-w-0 flex-1 overflow-y-auto bg-slate-50">
           {mustChangePassword && pathname !== ACCOUNT_PATH ? (
             <div className="px-8 py-10 text-sm text-slate-500">Loading...</div>
           ) : allowed ? (

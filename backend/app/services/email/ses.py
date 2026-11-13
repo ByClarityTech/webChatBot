@@ -51,13 +51,22 @@ class SesEmailSender:
         client=None,
     ) -> None:
         self._client = client or _ses_client(access_key_id, secret_access_key, region)
+        self._from_email = from_email
         self._source = formataddr((from_name, from_email))
         self._configuration_set = configuration_set
         self._max_attempts = max_attempts
 
-    def send_email(self, to_email: str, subject: str, html_content: str, text_content: str) -> str:
+    def send_email(
+        self,
+        to_email: str,
+        subject: str,
+        html_content: str,
+        text_content: str,
+        from_name: str | None = None,
+    ) -> str:
+        source = formataddr((from_name, self._from_email)) if from_name else self._source
         kwargs = {
-            "Source": self._source,
+            "Source": source,
             "Destination": {"ToAddresses": [to_email]},
             "Message": {
                 "Subject": {"Data": subject, "Charset": "UTF-8"},

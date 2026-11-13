@@ -12,6 +12,7 @@ import {
   listUsers,
   ManagedClient,
   ManagedUser,
+  resendInvite,
   updateUser,
 } from "@/lib/admin-api";
 import { canManageUser, creatableUserTypes, USER_TYPE_LABELS } from "@/lib/admin-permissions";
@@ -35,6 +36,14 @@ function formatDate(value: string | null): string {
 }
 
 const inputClass = "mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm";
+
+/**
+ * Setup is not finished. The API does not report a pending invite yet, so this is the best
+ * signal available. Inactive users are excluded: the API refuses to invite them.
+ */
+function needsSetup(user: ManagedUser): boolean {
+  return user.is_active && user.must_change_password;
+}
 
 export function UsersTable() {
   const actor = useAdminUser();
@@ -114,23 +123,20 @@ export function UsersTable() {
       return;
     }
 
-    const password = generatePassword();
     setCreating(true);
     setError(null);
     setSuccess(null);
     setRevealed(null);
     try {
-      const user = await createUser({
+      await createUser({
         email,
         full_name: fullName,
-        password,
         user_type: newType,
         client_id: isSuperAdmin ? newClientId : undefined,
       });
       setNewEmail("");
       setNewName("");
-      setSuccess(`Created ${USER_TYPE_LABELS[user.user_type]} ${user.email}.`);
-      setRevealed({ password, forLabel: user.email });
+      setSuccess("User created and invite email sent.");
       await loadUsers();
     } catch (err) {
       setError(errorMessage(err, "Create failed."));
@@ -187,6 +193,17 @@ export function UsersTable() {
         setRevealed({ password, forLabel: user.email });
       },
       "Password reset failed.",
+    );
+  }
+
+  function handleResendInvite(user: ManagedUser) {
+    void runAction(
+      user,
+      async () => {
+        await resendInvite(user.id);
+        setSuccess(`Sent a new invite to ${user.email}. Any earlier link no longer works.`);
+      },
+      "Resend failed.",
     );
   }
 
@@ -460,6 +477,16 @@ export function UsersTable() {
                           >
                             Rename
                           </button>
+                          {needsSetup(user) && (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => handleResendInvite(user)}
+                              className="rounded-lg border border-slate-300 px-3 py-1.5 text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Resend invite
+                            </button>
+                          )}
                           {user.is_active && (
                             <button
                               type="button"

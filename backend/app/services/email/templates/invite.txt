@@ -2,7 +2,7 @@ Set up your account
 
 Hello $full_name,
 
-An administrator at $practice_name created an account for you in the $from_name admin app.
+An administrator at $practice_name created an account for you in the admin app.
 
 Choose your password at the link below. The link works once and expires in $expires_hours hours.
 

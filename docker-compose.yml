@@ -35,8 +35,9 @@ services:
     volumes:
       - upload_data:/data/uploads
       - docling_cache:/tmp/docling_cache
-    ports:
-      - "8001:8001"
+    # Internal only: reachable from the other services on the Docker network, not from the host.
+    expose:
+      - "8001"
     depends_on:
       qdrant:
         condition: service_started

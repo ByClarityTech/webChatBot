@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 from app.api.routes.admin import (
     audit_log,
     bookings,
+    calendar,
     clients,
     dashboard,
     documents,
@@ -34,6 +35,7 @@ def full_admin_app():
     for module in (
         audit_log,
         bookings,
+        calendar,
         clients,
         dashboard,
         documents,
@@ -53,13 +55,16 @@ def test_area_access_matches_role_decisions():
     expected = {
         Area.dashboard: {SA, ADMIN, SUPPORT},
         Area.documents: {SA, ADMIN},
-        Area.calendar: {SA, ADMIN, SUPPORT},
-        Area.business_hours: {SA, ADMIN, SUPPORT},
+        # D-05 settings are admin only: Support has no access to them.
+        Area.calendar: {SA, ADMIN},
+        Area.business_hours: {SA, ADMIN},
         Area.bookings_view: {SA, ADMIN, SUPPORT},
         Area.bookings_cancel: {SA, ADMIN, SUPPORT},
         Area.audit_log: {SA, ADMIN},
         Area.users: {SA, ADMIN},
         Area.clients: {SA},
+        # PRD D-02: the CSV download is admin only.
+        Area.analytics_export: {SA, ADMIN},
     }
     assert set(AREA_ACCESS) == set(Area)
     for area, roles in expected.items():
@@ -110,6 +115,14 @@ SUPPORT_FORBIDDEN = [
     ("POST", "/api/v1/admin/users"),
     ("GET", "/api/v1/admin/clients"),
     ("POST", "/api/v1/admin/clients"),
+    # D-05 settings: admin only.
+    ("GET", "/api/v1/admin/settings/business-hours"),
+    ("PUT", "/api/v1/admin/settings/business-hours"),
+    ("GET", "/api/v1/admin/calendar"),
+    ("PUT", "/api/v1/admin/calendar/mode"),
+    ("GET", "/api/v1/admin/google/oauth/start"),
+    ("GET", "/api/v1/admin/google/oauth/status"),
+    ("DELETE", "/api/v1/admin/google/oauth/disconnect"),
 ]
 
 

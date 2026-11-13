@@ -6,10 +6,10 @@ from app.agents.public.state import PublicAssistantState
 from app.core.safety import (
     DIAGNOSIS_EN,
     DIAGNOSIS_ES,
-    EMERGENCY_REPLY,
     check_diagnosis_probe,
     check_urgent,
     detect_language,
+    emergency_reply,
     pick,
 )
 
@@ -36,13 +36,14 @@ def _bypass(reply: str, kind: str) -> dict:
 
 def safety_node(state: PublicAssistantState) -> dict:
     """Runs before classify. A bypass reply ends the graph, so the model is never called."""
+    phone = state.get("contact_phone")
     try:
         text = _latest_user_text(state)
         category = check_urgent(text)
         if category:
             # The category only. The message text can contain personal health details.
             logger.warning("Urgent safety bypass (category=%s)", category)
-            return _bypass(EMERGENCY_REPLY, SAFETY_URGENT)
+            return _bypass(emergency_reply(phone), SAFETY_URGENT)
         if check_diagnosis_probe(text):
             logger.info("Diagnosis refusal bypass")
             reply = pick(detect_language(text), DIAGNOSIS_EN, DIAGNOSIS_ES)
@@ -50,5 +51,5 @@ def safety_node(state: PublicAssistantState) -> dict:
     except Exception as exc:
         # Fail safe: if the check itself breaks, the visitor gets the emergency text.
         logger.error("Safety check failed; sent emergency reply (error=%s)", type(exc).__name__)
-        return _bypass(EMERGENCY_REPLY, SAFETY_URGENT)
+        return _bypass(emergency_reply(phone), SAFETY_URGENT)
     return {"safety": None}

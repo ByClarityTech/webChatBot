@@ -23,10 +23,13 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     allowed_origins: str = "http://localhost:3000,http://localhost:8000"
 
-    llm_provider: Literal["openai", "groq", "gemini"] = "openai"
+    llm_provider: Literal["openai", "groq", "gemini", "anthropic"] = "openai"
     openai_api_key: str = ""
     groq_api_key: str = ""
     google_api_key: str = ""
+    anthropic_api_key: str = ""
+    # Used when LLM_PROVIDER=anthropic. llm_model keeps serving the other providers.
+    anthropic_model: str = "claude-sonnet-5-5"
     llm_model: str = "gpt-4o-mini"
 
     embedding_provider: Literal["openai"] = "openai"
@@ -34,6 +37,8 @@ class Settings(BaseSettings):
 
     docling_cache_dir: str = "/tmp/docling_cache"
     worker_url: str = "http://localhost:8001"
+    # Sent as X-Internal-Token on every call to the worker. Must match the worker's value.
+    internal_worker_secret: str = ""
     upload_dir: str = "/data/uploads"
 
     qdrant_url: str = "http://localhost:6333"
@@ -98,7 +103,7 @@ class Settings(BaseSettings):
     ses_region: str = "ap-south-1"
     ses_configuration_set: str | None = None
     emails_from_email: EmailStr = "tech@claritytechlabs.com"
-    emails_from_name: str = "Clarity Dental AI"
+    emails_from_name: str = "Website Assistant"
     # Lifetimes of single-use links sent by email (services/invites.py).
     invite_ttl_hours: int = 24
     password_reset_ttl_hours: int = 1

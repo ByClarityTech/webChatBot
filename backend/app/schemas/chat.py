@@ -39,6 +39,9 @@ class ChatResponse(BaseModel):
     action: str | None = None
     # Set when a deterministic safety reply was sent instead of a model answer.
     safety: Literal["urgent", "diagnosis"] | None = None
+    # Set only with an urgent reply: the practice's phone, so the widget can offer a call
+    # button next to 911. None when the practice has not set a number.
+    contact_phone: str | None = None
     session_id: str | None = None
     # True when an earlier conversation ended (30 minutes idle or closed) and this one started.
     session_reset: bool = False

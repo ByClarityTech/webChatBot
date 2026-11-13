@@ -321,6 +321,23 @@ async def test_the_summary_export_is_csv_with_no_transcript_or_pii_and_is_audite
     assert exports and exports[0]["client_id"] == actor.client_id
 
 
+@pytest.mark.parametrize("kind", ["summary", "conversations"])
+async def test_support_gets_403_on_every_csv_export_and_nothing_is_written(
+    app, clinic, db, audit_rows, kind
+):
+    db.fake("list_conversations", ([], 0))
+    with signed_in(app, SUPPORT):
+        async with _client(app) as client:
+            response = await client.get(
+                "/api/v1/admin/analytics/export", params={"kind": kind, "preset": "30d"}
+            )
+
+    assert response.status_code == 403
+    assert "text/csv" not in response.headers.get("content-type", "")
+    assert "metric,value" not in response.text
+    assert not [row for row in audit_rows if row["action"] == "analytics.export"]
+
+
 async def test_the_conversation_export_needs_a_client_for_a_super_admin(app, clinic, db):
     with signed_in(app, SUPER):
         async with _client(app) as client:

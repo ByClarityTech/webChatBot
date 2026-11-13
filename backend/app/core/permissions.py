@@ -22,6 +22,8 @@ class Area(str, Enum):
     practice_contact = "practice_contact"
     inbox = "inbox"
     analytics = "analytics"
+    # The CSV download. Narrower than analytics: Support can read the dashboard, not export it.
+    analytics_export = "analytics_export"
     conversations = "conversations"
 
 
@@ -30,8 +32,9 @@ class Area(str, Enum):
 AREA_ACCESS: dict[Area, frozenset[str]] = {
     Area.dashboard: frozenset({SUPER_ADMIN, ADMIN, SUPPORT}),
     Area.documents: frozenset({SUPER_ADMIN, ADMIN}),
-    Area.calendar: frozenset({SUPER_ADMIN, ADMIN, SUPPORT}),
-    Area.business_hours: frozenset({SUPER_ADMIN, ADMIN, SUPPORT}),
+    # Calendar and business hours are D-05 settings (admins only in the PRD's roles table).
+    Area.calendar: frozenset({SUPER_ADMIN, ADMIN}),
+    Area.business_hours: frozenset({SUPER_ADMIN, ADMIN}),
     Area.bookings_view: frozenset({SUPER_ADMIN, ADMIN, SUPPORT}),
     Area.bookings_cancel: frozenset({SUPER_ADMIN, ADMIN, SUPPORT}),
     Area.audit_log: frozenset({SUPER_ADMIN, ADMIN}),
@@ -49,6 +52,8 @@ AREA_ACCESS: dict[Area, frozenset[str]] = {
     Area.inbox: frozenset({SUPER_ADMIN, ADMIN, SUPPORT}),
     # Metrics, outcome labels and the zero-PHI export: everyone on the admin team.
     Area.analytics: frozenset({SUPER_ADMIN, ADMIN, SUPPORT}),
+    # PRD D-02: export is admin only, and every export is audit-logged.
+    Area.analytics_export: frozenset({SUPER_ADMIN, ADMIN}),
     # Transcripts and phone lookups: patient conversations. Support is not included.
     Area.conversations: frozenset({SUPER_ADMIN, ADMIN}),
 }

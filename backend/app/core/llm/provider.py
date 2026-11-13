@@ -4,7 +4,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.core.config import Settings, get_settings
-from app.core.llm import gemini, groq, openai
+from app.core.llm import claude, gemini, groq, openai
 
 
 def get_chat_model(
@@ -27,6 +27,10 @@ def get_chat_model(
         if not cfg.google_api_key:
             raise ValueError("GOOGLE_API_KEY is required when LLM_PROVIDER=gemini")
         return gemini.create_chat_model(cfg)
+    if cfg.llm_provider == "anthropic":
+        if not cfg.anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic")
+        return claude.create_chat_model(cfg)
 
     raise ValueError(f"Unsupported LLM provider: {cfg.llm_provider}")
 

@@ -38,3 +38,4 @@ frontend/out/
 Thumbs.db
 .cursor/   
 .conda/ 
+/prompts
