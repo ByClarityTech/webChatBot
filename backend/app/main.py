@@ -48,6 +48,9 @@ from app.api.routes.admin import (
     settings as admin_settings,
 )
 from app.api.routes.admin import (
+    sources as admin_sources,
+)
+from app.api.routes.admin import (
     users as admin_users,
 )
 from app.api.routes.admin import (
@@ -59,6 +62,7 @@ from app.db.init import init_db
 from app.services import live_chat
 from app.services.email import log_email_configuration
 from app.services.notifications import run_dispatcher
+from app.services.website_crawler.scheduler import run_scheduler
 
 # Cookie-authenticated paths that change state; see CSRFOriginMiddleware.
 CSRF_PROTECTED_PREFIXES = ("/api/v1/admin", "/api/v1/auth")
@@ -77,6 +81,8 @@ async def lifespan(app: FastAPI):
     sweeper = asyncio.create_task(live_chat.run_sweeper())
     # Sends queued notification emails, with retries (FR-34).
     notifier = asyncio.create_task(run_dispatcher())
+    # Monthly re-crawl of client websites. Only one instance runs it (advisory lock).
+    crawl_scheduler = asyncio.create_task(run_scheduler())
     try:
         async with AsyncPostgresSaver.from_conn_string(settings.database_url) as checkpointer:
             await checkpointer.setup()
@@ -84,7 +90,7 @@ async def lifespan(app: FastAPI):
             logger.info("Public assistant graph ready")
             yield
     finally:
-        for task in (sweeper, notifier):
+        for task in (sweeper, notifier, crawl_scheduler):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
@@ -136,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(google_oauth.router, prefix="/api/v1")
     app.include_router(admin_calendar.router, prefix="/api/v1")
     app.include_router(admin_settings.router, prefix="/api/v1")
+    app.include_router(admin_sources.router, prefix="/api/v1")
     app.include_router(admin_bookings.router, prefix="/api/v1")
     app.include_router(admin_dashboard.router, prefix="/api/v1")
     app.include_router(audit_log.router, prefix="/api/v1")

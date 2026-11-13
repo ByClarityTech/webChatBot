@@ -76,6 +76,8 @@ export const ADMIN_PAGES: readonly { href: string; label: string; area: AdminAre
   { href: "/admin/documents", label: "Documents", area: "documents" },
   // FAQs are part of the knowledge base: same roles as Documents.
   { href: "/admin/faqs", label: "FAQs", area: "documents" },
+  // The practice website: crawled pages and changes waiting for approval (same roles).
+  { href: "/admin/sources", label: "Sources", area: "documents" },
   { href: "/admin/calendar", label: "Calendar", area: "calendar" },
   { href: "/admin/settings", label: "Settings", area: "business_hours" },
   { href: "/admin/widget", label: "Widget", area: "widget_domains" },

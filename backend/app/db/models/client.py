@@ -1,6 +1,7 @@
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from psycopg.types.json import Jsonb
@@ -18,6 +19,39 @@ _SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://")
 # Browsers leave these out of an Origin header, so a saved ':80' or ':443' would never match.
 _DEFAULT_PORTS = frozenset({"80", "443"})
 MAX_ALLOWED_DOMAINS = 50
+
+
+_WEBSITE_HOST = re.compile(r"^[a-z0-9-]+(?:\.[a-z0-9-]+)+$")
+
+
+def normalize_website_url(raw: str | None) -> str | None:
+    """The practice site as https://host. Blank clears it. Raises ValueError with a message.
+
+    'clinic.com' and 'https://www.clinic.com/' are accepted. Only the site address is kept: a
+    path, query, port other than 443, or a user name is refused.
+    """
+    value = (raw or "").strip()
+    if not value:
+        return None
+    if not _SCHEME.match(value.lower()):
+        value = f"https://{value}"
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError as exc:
+        raise ValueError("Enter the website address, such as https://clinic.com") from exc
+    if parts.scheme != "https":
+        raise ValueError("The website address must start with https://")
+    if parts.username is not None or parts.password is not None:
+        raise ValueError("The website address cannot contain a user name or password")
+    if port not in (None, 443):
+        raise ValueError("The website must use the standard https port")
+    if parts.path not in ("", "/") or parts.query or parts.fragment:
+        raise ValueError("Enter the site address only, such as https://clinic.com")
+    host = (parts.hostname or "").lower()
+    if not _WEBSITE_HOST.fullmatch(host):
+        raise ValueError("Enter the website address, such as https://clinic.com")
+    return f"https://{host}"
 
 
 def clean_domain_entry(raw: str) -> str:
@@ -77,12 +111,14 @@ class ClientRecord:
     allowed_domains: list[str] = field(default_factory=list)
     # E.164 practice number behind the Call and Text buttons (migration 0013), or None.
     contact_phone: str | None = None
+    # The practice site the crawler reads, https://host (migration 0018), or None.
+    website_url: str | None = None
 
 
 _CLIENT_COLUMNS = """
     c.id, c.name, c.slug, c.status, c.created_at, c.updated_at,
     (SELECT COUNT(*) FROM users u WHERE u.client_id = c.id), c.calendar_mode,
-    c.allowed_domains, c.contact_phone
+    c.allowed_domains, c.contact_phone, c.website_url
 """
 
 
@@ -98,6 +134,7 @@ def _row_to_record(row: tuple) -> ClientRecord:
         calendar_mode=row[7],
         allowed_domains=list(row[8] or []),
         contact_phone=row[9],
+        website_url=row[10],
     )
 
 
@@ -189,6 +226,18 @@ async def set_client_allowed_domains(client_id: UUID, patterns: list[str]) -> Cl
             await cur.execute(
                 "UPDATE clients SET allowed_domains = %s, updated_at = NOW() WHERE id = %s",
                 (Jsonb(cleaned), client_id),
+            )
+        await conn.commit()
+    return await get_client(client_id)
+
+
+async def set_client_website_url(client_id: UUID, url: str | None) -> ClientRecord | None:
+    """Stores a value already passed through normalize_website_url, or clears it with None."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE clients SET website_url = %s, updated_at = NOW() WHERE id = %s",
+                (url, client_id),
             )
         await conn.commit()
     return await get_client(client_id)

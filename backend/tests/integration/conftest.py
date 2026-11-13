@@ -19,6 +19,9 @@ from app.db.init import run_migrations
 # Test modules here set `pytestmark = pytest.mark.integration` (a conftest-level pytestmark
 # does not apply to tests); the marker also turns off the root audit stub.
 TRUNCATE_TABLES = (
+    "pending_knowledge_updates",
+    "crawled_pages",
+    "crawl_runs",
     "chat_threads",
     "google_tokens",
     "oauth_pending_states",

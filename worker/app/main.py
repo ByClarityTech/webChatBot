@@ -7,8 +7,17 @@ from pydantic import BaseModel, Field
 
 from app.config import WorkerSettings, get_settings
 from app.docling_converter import convert_to_markdown
-from app.index_manager import delete_document_chunks, ensure_collection, upsert_documents
-from app.public_pipeline import build_documents, build_faq_document
+from app.index_manager import (
+    delete_document_chunks,
+    ensure_collection,
+    replace_page_version,
+    upsert_documents,
+)
+from app.public_pipeline import (
+    build_documents,
+    build_faq_document,
+    build_page_documents,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +32,16 @@ ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".html", ".htm", ".md", ".txt"}
 class ReindexRequest(BaseModel):
     client_id: UUID
     filename: str = Field(..., min_length=1, max_length=255)
+
+
+class PageIndexRequest(BaseModel):
+    client_id: UUID
+    url: str = Field(..., min_length=1, max_length=2048)
+    title: str = Field(default="", max_length=500)
+    # The backend caps extracted text at 200 KB; this only guards the request itself.
+    text: str = Field(..., min_length=1, max_length=400_000)
+    # SHA-256 (hex) of the normalized title and text, from the backend.
+    version: str = Field(..., pattern=r"^[0-9a-f]{64}$")
 
 
 class FaqIndexRequest(BaseModel):
@@ -189,6 +208,43 @@ async def document_text(document_id: UUID, client_id: UUID = Query(...)) -> dict
             detail=f"Could not read document: {exc}",
         ) from exc
     return {"document_id": str(document_id), "text": markdown}
+
+
+# ---------------------------------------------------------------- crawled pages
+# An approved page version is indexed beside the old one, which is removed after the new one is in.
+
+
+@app.put("/pages/{page_id}")
+async def index_page(page_id: UUID, body: PageIndexRequest) -> dict[str, int | str]:
+    settings = get_settings()
+    try:
+        documents = build_page_documents(
+            text=body.text,
+            title=body.title,
+            url=body.url,
+            client_id=body.client_id,
+            page_id=page_id,
+            version=body.version,
+            settings=settings,
+        )
+        chunks_indexed = replace_page_version(
+            body.client_id, page_id, body.version, documents, settings
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Page indexing failed: {exc}",
+        ) from exc
+    return {"status": "indexed", "chunks_indexed": chunks_indexed, "page_id": str(page_id)}
+
+
+@app.delete("/pages/{page_id}")
+async def delete_page(page_id: UUID, client_id: UUID = Query(...)) -> dict[str, str]:
+    settings = get_settings()
+    delete_document_chunks(client_id, page_id, settings)
+    return {"status": "deleted", "page_id": str(page_id)}
 
 
 # ---------------------------------------------------------------- FAQs
